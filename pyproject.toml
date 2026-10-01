@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "r_matrix"
+version = "0.1.0"
+description = "Prototype: core + halo approximation to a correlated observation-error R^-1 on mock MPI tasks"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Marcin Chrust" }]
+requires-python = ">=3.10"     # tested with 3.14
+dependencies = [
+    "numpy>=1.24",             # tested 2.4.6
+    "scipy>=1.10",             # tested 1.17.1
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]                                         # tested 9.1.1
+notebooks = ["matplotlib>=3.7", "pandas>=2.0", "ipykernel>=6"]  # tested 3.11.0, 3.0.3, 7.3.0
+all = ["r_matrix[test,notebooks]"]
+
+[project.urls]
+Repository = "https://github.com/marcin85PL/r_matrix"
+
+[tool.setuptools]
+packages = ["r_matrix"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
