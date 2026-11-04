@@ -38,6 +38,18 @@ print(res.metrics["rel_l2"])     # relative error against the exact global solve
 | `r_matrix/` | The package |
 | `tests/` | pytest suite |
 
+## Golden data for a compiled implementation
+
+`r_matrix/export.py` writes small deterministic cases (observations, parameters, and the outputs of
+every pipeline stage) as raw little-endian `.bin` arrays plus a `manifest.json` that records the
+toy commit. The C++ library tests (`2026-r-package`) read them.
+
+```bash
+python -m r_matrix.export --list
+python -m r_matrix.export all <outdir>        # or one case name; writes <outdir>/<case>/
+python -m pytest tests/test_export.py         # round-trip and consistency tests
+```
+
 ## License
 
 Apache License 2.0; see [LICENSE](LICENSE).
