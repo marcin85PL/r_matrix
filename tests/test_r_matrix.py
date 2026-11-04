@@ -2,8 +2,9 @@ import numpy as np
 import pytest
 
 from r_matrix import Config, Decomposition, Domain, MockComm, run
-from r_matrix.commmap import build_comm_maps, halo_exchange
+from r_matrix.commmap import build_comm_maps, halo_exchange, halo_exchange_adjoint
 from r_matrix.covariance import build_R, gaspari_cohn
+from r_matrix.diagnostics import approx_matrix, operator_matrix
 from r_matrix.generate import make_obs
 from r_matrix.halo import discover_halos
 from r_matrix.redistribute import check_redistribution, redistribute
@@ -185,3 +186,52 @@ def test_apply_Rinv_reuses_frozen_setup():
     for a, b in zip(res.apply_Rinv_exact(d), res.z_ref_orig):
         np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
     assert res.comm.stats.phases["test:halo"].bytes == res.comm.stats.phases["recurring:halo"].bytes
+
+
+# ---- symmetrised operator -----------------------------------------------------------
+
+TINY = Config(n_obs=300, h=1.0)   # small enough for operator matrices built column by column
+
+
+def test_halo_exchange_adjoint_is_adjoint():
+    comm, _, owned, _, _ = _setup()
+    halos, halo_owner, _ = discover_halos(comm, DEC, owned, 1.0)
+    maps = build_comm_maps(comm, owned, halos, halo_owner)
+    rng = np.random.default_rng(7)
+    x = [rng.standard_normal(len(o)) for o in owned]
+    y = [rng.standard_normal(len(hh)) for hh in halos]
+    lhs = sum(a @ b for a, b in zip(halo_exchange(comm, maps, x), y))
+    rhs = sum(a @ b for a, b in zip(x, halo_exchange_adjoint(comm, maps, y, [len(o) for o in owned])))
+    assert lhs == pytest.approx(rhs, rel=1e-13)
+
+
+def test_assembled_matrix_matches_operator():
+    res = run(TINY)
+    A_black = operator_matrix(lambda d: res.apply_Rinv(d, tag="diag")[0], res.obs_init)
+    np.testing.assert_allclose(approx_matrix(res), A_black, rtol=0, atol=1e-12)
+
+
+def test_symmetric_operator_is_half_sum_and_symmetric():
+    res = run(TINY, symmetric=True)
+    S = operator_matrix(lambda d: res.apply_Rinv(d, tag="diag")[0], res.obs_init)
+    A = approx_matrix(res)
+    assert np.abs(A - A.T).max() > 1e-6                       # the plain operator is not symmetric
+    np.testing.assert_allclose(S, 0.5 * (A + A.T), rtol=0, atol=1e-12)
+    assert np.abs(S - S.T).max() < 1e-13
+
+
+@pytest.mark.parametrize("overrides", [dict(px=1, py=1), dict(h=20.0)])
+def test_symmetric_equals_global_when_exact(overrides):
+    m = run(SMALL, symmetric=True, **overrides).metrics
+    assert m["rel_l2"] < 1e-12
+
+
+@pytest.mark.parametrize("overrides", [dict(pattern="clustered", px=6, py=4),   # empty-core ranks
+                                       dict(h=0.0)])                          # no halo at all
+def test_symmetric_operator_edge_cases(overrides):
+    res = run(Config(n_obs=120, symmetric=True, **overrides))
+    if overrides.get("pattern") == "clustered":
+        assert any(s.ncore == 0 for s in res.solvers)
+    S = operator_matrix(lambda d: res.apply_Rinv(d, tag="diag")[0], res.obs_init)
+    A = approx_matrix(res)
+    np.testing.assert_allclose(S, 0.5 * (A + A.T), rtol=0, atol=1e-12)

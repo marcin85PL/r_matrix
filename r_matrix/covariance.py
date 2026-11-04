@@ -97,6 +97,34 @@ class LocalSolver:
         z = cho_solve(self.factor, np.concatenate([d_core, d_halo]))
         return z[:self.ncore]
 
+    def apply_sym_parts(self, d_core, d_halo):
+        """This rank's two contributions to the symmetrised operator (A~ + A~^T) / 2.
+
+        One factorisation serves two right-hand sides:
+
+            R_loc [z | w] = [[d_core, d_core],
+                             [d_halo, 0     ]]
+
+        Returns
+        -------
+        z_core : z[:ncore], the contribution to A~ d (the same as ``apply``)
+        w_core : w[:ncore], the contribution to A~^T d on this rank's own observations
+        w_halo : w[ncore:], the contribution to A~^T d on the halo observations. It still
+            has to be sent back to, and summed on, the owners (halo_exchange_adjoint).
+
+        Why: A~ = sum_p E_p^T S_p R_p^-1 L_p, where L_p restricts to [core; halo], S_p
+        keeps the core rows and E_p restricts to the core. Hence
+        A~^T = sum_p L_p^T R_p^-1 S_p^T E_p: solve with [d_core; 0], then scatter-add the
+        whole local result.
+        """
+        if self.ncore == 0:
+            return np.zeros(0), np.zeros(0), np.zeros(self.nhalo)
+        rhs = np.zeros((self.n, 2))
+        rhs[:self.ncore, :] = d_core[:, None]
+        rhs[self.ncore:, 0] = d_halo
+        zw = cho_solve(self.factor, rhs)
+        return zw[:self.ncore, 0], zw[:self.ncore, 1], zw[self.ncore:, 1]
+
     def matvec_core(self, z_core, z_halo):
         """(R z) restricted to the core, from core + halo values of z.
 

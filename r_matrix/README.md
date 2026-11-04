@@ -31,7 +31,7 @@ r_matrix/                          the repository
 git clone https://github.com/marcin85PL/r_matrix.git && cd r_matrix
 python3 -m venv .venv && source .venv/bin/activate      # tested with Python 3.14
 pip install -e ".[all]"                                 # editable install, plus test and notebook extras
-python -m pytest -q                                     # expect: 26 passed in a few seconds
+python -m pytest -q                                     # expect: 33 passed in a few seconds
 python -m ipykernel install --user --name r_matrix     # makes the venv available to Jupyter
 ```
 
@@ -164,7 +164,7 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 
 ### Tests
 
-`tests/test_r_matrix.py` has 26 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
+`tests/test_r_matrix.py` has 33 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
 - with one task (P = 1) the result equals the global solve;
 - with a halo covering the whole domain, the result equals the global solve exactly;
 - the error decreases as h grows;
@@ -207,7 +207,7 @@ They are roughly in order of difficulty. Each says where to work and how to chec
 2. **Conditioning.** For α ∈ {0.3, 0.5, 0.8, 0.95, 0.99}, compute `np.linalg.cond` of the global R (use 500 obs) and the h/ℓ needed for a relative error below 1e-3. Plot one against the other. *Why it matters:* this is what sets the halo width for a real instrument. See section 2.2 of RESULTS.md.
 3. **A new pattern: clouds.** Add a `geostationary_cloudy` pattern that removes pixels under a smooth random "cloud" field (e.g. a thresholded, smoothed noise field). Does the error change, or only the cost? *Where:* `generate.py`, plus the tests.
 4. **A new correlation function.** Implement a SOAR correlation multiplied by a Gaspari–Cohn taper (a Schur product), as a `Config` option. Test that R stays positive definite and that its support is finite. Compare the error curves with plain GC at the same ℓ. *Where:* `covariance.py`, `pipeline.py`, tests.
-5. **Is the approximate operator symmetric?** On a 300-observation problem, build the full approximate matrix Ã column by column with `res.apply_Rinv` on unit vectors. Measure ‖Ã − Ãᵀ‖/‖Ã‖ as a function of h. Then propose and implement a symmetric variant. *Why it matters:* conjugate-gradient minimisers need a symmetric operator.
+5. **Is the approximate operator symmetric?** On a 300-observation problem, build the full approximate matrix Ã column by column with `res.apply_Rinv` on unit vectors. Measure ‖Ã − Ãᵀ‖/‖Ã‖ as a function of h. Then propose and implement a symmetric variant. *Why it matters:* conjugate-gradient minimisers need a symmetric operator. *Now implemented:* `Config(symmetric=True)`, with `diagnostics.operator_matrix` and `approx_matrix` for the matrices; see RESULTS §2.5. It remains a good exercise to rederive.
 6. **A sparse local solver.** Replace the dense Cholesky in `LocalSolver` with a sparse one, or with CG using a fixed number of iterations. Compare memory, setup time and apply time with the dense version as `n_loc` grows (h/ℓ from 2 to 6). *Where:* a new class with the `LocalSolver` interface; see §7.
 7. **Advanced: a better decomposition for clustered data.** Implement recursive coordinate bisection that balances observation counts, with rectangular cells of unequal size, behind the `Decomposition` interface. Compare the load balance (`metrics["owned"]["cv"]`) and the peak halo/core ratio with the regular grid for `pattern="clustered"`.
 8. **Advanced: real MPI.** Port the redistribution step (`redistribute.redistribute` and `RedistributionPlan`) to mpi4py. Run it with `mpirun -n 4`, and check that the per-phase byte counts equal `MockComm`'s.
@@ -233,8 +233,9 @@ r_matrix/              the repository
     covariance.py      Gaspari–Cohn, build_R, LocalSolver (Cholesky on core + halo)
     reference.py       global exact solve
     diagnostics.py     error metrics, load balance, halo summary
-    pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep()
-  tests/test_r_matrix.py           26 pytest tests
+    pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep(), local_solves (plain or symmetrised)
+  tests/test_r_matrix.py           33 pytest tests
+  experiments/symmetric_operator.py  symmetrised operator: symmetry, definiteness, accuracy, cost (RESULTS §2.5)
   notebooks/01_walkthrough.ipynb   toy problem, step by step
   notebooks/02_experiments.ipynb   full experiments (sections 1–6)
 ```

@@ -102,6 +102,50 @@ Notebook section 6 contours d, z*, z̃ and z̃ − z* over the whole domain.
   - A direct consequence: the approximate operator is **not symmetric**, since row and column come from different local problems.
   - This matters if it is used inside a symmetric solver (conjugate gradients) or as a preconditioner.
 
+### 2.5 The symmetrised operator S = ½(Ã + Ãᵀ) (added 2026-11-04)
+
+`Config(symmetric=True)`. Each local solve takes a second right-hand side, [d_core; 0], on the same factor, and the halo part of that solution is summed back into its owners by an adjoint halo exchange (`commmap.halo_exchange_adjoint`). Script: `experiments/symmetric_operator.py`; raw output: `experiments/symmetric_operator.out`. Baseline setup otherwise (3000 obs, 4 × 3 tasks).
+
+- *Generalised eigenvalues* are those of S x = λ R⁻¹ x. If all are close to 1, S is close to R⁻¹ in the energy norm, so the Jo Hessian, and with it the minimisation, is barely changed.
+- *Errors* are the relative L2 error of Ã d and S d against R⁻¹ d.
+- *Bytes* are all recurring traffic per application.
+
+| α | h/ℓ | ‖Ã−Ãᵀ‖/‖Ã‖ | λ_min(S) | λ_min(R⁻¹) | gen. eig. min | gen. eig. max | error Ã | error S | bytes Ã | bytes S |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0.5 | 2 | 2.4e-3 | 0.108 | 0.108 | 0.9837 | 1.0163 | 2.0e-3 | 1.7e-3 | 71 kB | 98 kB |
+| 0.5 | 4 | 6.3e-5 | 0.108 | 0.108 | 0.9995 | 1.0005 | 6.2e-5 | 4.6e-5 | 106 kB | 168 kB |
+| 0.8 | 1 | 2.5e-2 | 0.0703 | 0.0703 | 0.7842 | 1.2397 | 2.5e-2 | 2.4e-2 | 56 kB | 68 kB |
+| 0.8 | 2 | 7.5e-3 | 0.0703 | 0.0703 | 0.9368 | 1.0642 | 6.9e-3 | 6.7e-3 | 71 kB | 98 kB |
+| 0.8 | 3 | 1.9e-3 | 0.0703 | 0.0703 | 0.9814 | 1.0189 | 1.7e-3 | 1.8e-3 | 88 kB | 131 kB |
+| **0.8** | **4** | 4.9e-4 | 0.0703 | 0.0703 | **0.9954** | **1.0046** | 4.8e-4 | **4.1e-4** | 106 kB | 168 kB |
+| 0.8 | 6 | 1.8e-5 | 0.0703 | 0.0703 | 0.9996 | 1.0004 | 2.4e-5 | 2.5e-5 | 150 kB | 255 kB |
+| 0.95 | 1 | 3.7e-2 | 0.0566 | 0.0599 | 0.4606 | 1.5969 | 4.4e-2 | 5.6e-2 | 56 kB | 68 kB |
+| 0.95 | 2 | 1.7e-2 | 0.0599 | 0.0599 | 0.7725 | 1.2404 | 1.7e-2 | 2.2e-2 | 71 kB | 98 kB |
+| 0.95 | 4 | 2.4e-3 | 0.0599 | 0.0599 | 0.9681 | 1.0324 | 2.6e-3 | 3.2e-3 | 106 kB | 168 kB |
+| 0.95 | 6 | 1.9e-4 | 0.0599 | 0.0599 | 0.9952 | 1.0048 | 2.6e-4 | 3.6e-4 | 150 kB | 255 kB |
+
+Robustness at α = 0.95, the worst-conditioned case:
+
+| tasks | pattern | h/ℓ | λ_min(S) | gen. eig. min | gen. eig. max | error Ã | error S |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 4×3 | clustered | 2 | 0.0053 | 0.5032 | 1.5208 | 6.7e-3 | 1.9e-2 |
+| 4×3 | clustered | 4 | 0.0054 | 0.9492 | 1.0512 | 6.7e-4 | 1.6e-3 |
+| 4×3 | coincident | 4 | 0.0576 | 0.9643 | 1.0363 | 1.9e-3 | 2.7e-3 |
+| 4×3 | boundary | 4 | 0.0447 | 0.9549 | 1.0453 | 2.0e-3 | 3.2e-3 |
+| 4×3 | geostationary | 4 | 0.0747 | 0.9545 | 1.0463 | 3.7e-3 | 5.0e-3 |
+| 8×6 | uniform | 4 | 0.0599 | 0.9624 | 1.0382 | 3.7e-3 | 4.8e-3 |
+| 8×6 | clustered | 4 | 0.0054 | 0.9338 | 1.0663 | 1.0e-3 | 1.9e-3 |
+
+The full sweep (h/ℓ = 1–6, and h/ℓ = 2 for every robustness case) is in the `.out` file.
+
+- **S is positive definite in all 30 cases.** This includes h = 1ℓ at α = 0.95, where λ_min(S) = 0.057 against 0.060 for R⁻¹.
+  - The script computes these eigenvalues on ½(Ã + Ãᵀ) assembled from the local factors, so it is symmetric by construction.
+  - The tests check that the operator applied by `apply_Rinv(symmetric=True)` equals this matrix to 1e-12 and is symmetric to 1e-13. They do this on small problems, including clustered data with ranks that have no core and a zero halo.
+- **S is close to R⁻¹ in the energy norm.** The spread of the generalised eigenvalues around 1 scales with the asymmetry, at about 10× its value: ±0.5 % at α = 0.8 with h = 4ℓ, ±3 % at α = 0.95, and ±5–7 % for clustered data. It shrinks to 0 as h grows.
+- **The accuracy is unchanged or slightly better for α ≤ 0.8. It is 1.2–3× worse at α = 0.95 and for clustered data.** The transpose brings in columns from halo-truncated problems. At α = 0.95 an error below 1e-3 needs h ≈ 5.5ℓ instead of 5ℓ.
+- **Cost:** +20–70 % recurring traffic, growing with h/ℓ (+21 % at 1ℓ, +38 % at 2ℓ, +58 % at 4ℓ, +70 % at 6ℓ), because the halo is exchanged twice; the forward and reverse moves do not change. The second right-hand side reuses the factor, so the setup cost does not change.
+- **Verdict for the IFS design (plan decision D3):** the symmetrised core + halo operator is usable inside CG, with Jo and its gradient consistent. Choose the halo width from the error gate, which is the slightly stricter requirement for S.
+
 ## 3. Status against the acceptance gates (slide 8)
 
 | Gate | Status |
@@ -117,7 +161,7 @@ Notebook section 6 contours d, z*, z̃ and z̃ − z* over the whole domain.
 
 - **The mock is serial.** Bytes, messages and peers are exact, but times are not parallel timings. The next check is a real MPI (mpi4py) version, which means rewriting the per-rank loops as SPMD code (see the `comm.py` docstring), compared with sparse or neighbourhood exchange (slide 4).
 - **Local solves are dense.** At h ≈ 4ℓ, the local R alone takes about 13 MB per task in this small setup (the factor takes as much again), and the cost is O(n_loc³). R_loc is sparse, so a sparse Cholesky (with some fill-in) or a CG solve with a fixed iteration count is the natural next step. That is the local-solver work of slide 8.
-- **The operator is non-symmetric.** A symmetrised variant, e.g. ½(Ã + Ãᵀ), which needs one extra halo exchange, or overlapping-Schwarz-style weighting of the halo results, would make the approximate R⁻¹ usable inside CG.
+- **The operator is non-symmetric.** Addressed by the symmetrised variant ½(Ã + Ãᵀ) (§2.5). Overlapping-Schwarz-style weighting of the halo results remains an untested alternative.
 - **Model realism:**
   - add channels, inter-channel correlation and time slots (slide 1 assumptions 1 and 2);
   - add a spherical or periodic domain;

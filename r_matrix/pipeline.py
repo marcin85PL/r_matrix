@@ -13,6 +13,7 @@
     forward             d: original ranks -> spatial owners      RedistributionPlan.forward
     halo update         d on the halo from neighbours            commmap.halo_exchange
     5b local solve      z_loc = R_loc^-1 d_loc, keep the core    LocalSolver.apply
+       (symmetric)      + 2nd RHS [d_core; 0], adjoint halo sum  local_solves
     reverse             z: spatial owners -> original ranks      RedistributionPlan.reverse
     --- validation ----------------------------------------------------------------------
     distributed residual  ||R z~ - d|| / ||d|| via one more halo exchange
@@ -30,7 +31,7 @@ import numpy as np
 from scipy.linalg import cho_solve
 
 from .comm import MockComm
-from .commmap import build_comm_maps, halo_exchange
+from .commmap import build_comm_maps, halo_exchange, halo_exchange_adjoint
 from .covariance import LocalSolver
 from .decomposition import Decomposition, Domain
 from .diagnostics import error_metrics, halo_summary, load_balance
@@ -57,6 +58,9 @@ class Config:
         h : halo width, in domain units (not in units of l). Results are quoted
             as h / l, so with the default c = 0.5, run(h=2.0) means h = 4 l.
         criterion : "rect" or "obs"; halo_method : "brute" or "kdtree"
+    symmetric : apply the symmetrised operator (A~ + A~^T) / 2 instead of A~. It costs a
+        second right-hand side in each local solve and one reverse (adjoint) halo
+        exchange per application.
     reference : also run the global exact solve (needed for the error metrics)
     """
     n_obs: int = 3000
@@ -73,11 +77,29 @@ class Config:
     h: float = 1.0
     criterion: str = "rect"
     halo_method: str = "brute"
+    symmetric: bool = False
     reference: bool = True
 
     @property
     def h_over_l(self):
         return self.h / self.c
+
+
+def local_solves(comm, maps, solvers, d_core, d_halo, symmetric, tag="recurring"):
+    """Step 5b on every rank: z = A~ d, or z = (A~ + A~^T) d / 2 when symmetric.
+
+    The symmetric variant uses two right-hand sides per local solve
+    (LocalSolver.apply_sym_parts), then sends the halo part of A~^T d back to the
+    owners with one adjoint halo exchange (phase "<tag>:adj_halo", which is not
+    counted in bytes_apply_halo).
+    Returns z per rank, in owned order.
+    """
+    if not symmetric:
+        return [s.apply(dc, dh) for s, dc, dh in zip(solvers, d_core, d_halo)]
+    parts = [s.apply_sym_parts(dc, dh) for s, dc, dh in zip(solvers, d_core, d_halo)]
+    back = halo_exchange_adjoint(comm, maps, [p[2] for p in parts],
+                                 [s.ncore for s in solvers], phase=f"{tag}:adj_halo")
+    return [0.5 * (zc + wc + b) for (zc, wc, _), b in zip(parts, back)]
 
 
 @dataclass
@@ -123,7 +145,8 @@ class RunResult:
         """
         d_core = self.plan.forward(self.comm, d_orig, phase=f"{tag}:forward")
         d_halo = halo_exchange(self.comm, self.maps, d_core, phase=f"{tag}:halo")
-        z_owned = [s.apply(dc, dh) for s, dc, dh in zip(self.solvers, d_core, d_halo)]
+        z_owned = local_solves(self.comm, self.maps, self.solvers, d_core, d_halo,
+                               self.config.symmetric, tag)
         return self.plan.reverse(self.comm, z_owned, phase=f"{tag}:reverse"), z_owned
 
     def apply_Rinv_exact(self, d_orig):
@@ -167,7 +190,8 @@ def run(cfg=Config(), **overrides):
     Communication, in bytes counted by MockComm:
         bytes_setup : everything tagged "setup:*"
         bytes_apply : one application of R^-1 (forward + halo + reverse)
-        bytes_apply_halo : the halo-update part of bytes_apply alone
+        bytes_apply_halo : the halo-update part of bytes_apply alone (without the
+            adjoint halo exchange of the symmetric operator, phase "recurring:adj_halo")
         messages_apply : non-empty off-rank messages in one application
     Time (single process, indicative): time_setup, time_apply, time_reference
     """
@@ -208,7 +232,7 @@ def run(cfg=Config(), **overrides):
     d_halo = halo_exchange(comm, maps, d_core)
     t["apply_comm_in"] = time.perf_counter() - t0
     t0 = time.perf_counter()
-    z_owned = [s.apply(dc, dh) for s, dc, dh in zip(solvers, d_core, d_halo)]
+    z_owned = local_solves(comm, maps, solvers, d_core, d_halo, cfg.symmetric)
     t["apply_solve"] = time.perf_counter() - t0
     t0 = time.perf_counter()
     z_orig = plan.reverse(comm, z_owned)

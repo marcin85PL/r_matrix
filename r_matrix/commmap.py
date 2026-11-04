@@ -152,3 +152,33 @@ def halo_exchange(comm, maps, core_values, phase="recurring:halo"):
             v[sl] = recv[s]
         out.append(v)
     return out
+
+
+def halo_exchange_adjoint(comm, maps, halo_values, ncore, phase="recurring:adj_halo"):
+    """Adjoint of halo_exchange: return halo values to their owners and sum them there.
+
+    It uses the same frozen maps with the roles of send and receive swapped, so
+    <halo_exchange(x), y> = <x, halo_exchange_adjoint(y)>, summed over all ranks.
+
+    Parameters
+    ----------
+    halo_values : per rank, a float array of length nhalo, in halo_local_index order
+    ncore : per rank, the number of owned values
+    phase : name under which the traffic is counted in comm.stats
+
+    Returns
+    -------
+    per rank, a float array in owned (global_id) order. Each owned value receives the
+    sum of the contributions from every rank holding it in its halo, or 0 if there are
+    none. Contributions are added in increasing source-rank order, so the result does
+    not depend on message arrival order.
+    """
+    sends = [{s: halo_values[m.rank][sl] for s, sl in m.recv.items()} for m in maps]
+    recvs = comm.neighbor_exchange(sends, phase)
+    out = []
+    for m, recv, n in zip(maps, recvs, ncore):
+        acc = np.zeros(n)
+        for s in sorted(recv):
+            np.add.at(acc, m.send[s], recv[s])
+        out.append(acc)
+    return out
