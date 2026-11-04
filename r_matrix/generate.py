@@ -82,12 +82,13 @@ def _positions(n, domain, pattern, rng, decomposition=None, frac=0.2, n_clusters
 
 def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
              departures="white", c=None, alpha=None, sigma_range=(0.8, 1.2),
-             empty_ranks=(), skew=None):
+             empty_ranks=(), skew=None, n_groups=1, group_layout="random"):
     """Generate n observations scattered at random over nranks initial MPI tasks.
 
     Parameters
     ----------
-    n : number of observations (approximate for pattern="geostationary")
+    n : number of observations (approximate for pattern="geostationary", and rounded
+        down to a multiple of n_groups for group_layout="colocated")
     domain : decomposition.Domain
     nranks : number of initial tasks (the same tasks later own the subdomains)
     seed : seed for numpy.random.default_rng; fixes positions, values and ranks
@@ -102,6 +103,13 @@ def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
     empty_ranks : initial ranks that get no observations (edge-case testing)
     skew : if given, the rank shares are drawn from Dirichlet(skew); a small skew
         gives very uneven initial counts. None means uniformly random ranks.
+    n_groups : number of correlation groups (field "group", 0 .. n_groups-1). Errors
+        are correlated only within a group.
+    group_layout : how groups are assigned when n_groups > 1
+        "random"    -> each observation gets a random group (e.g. different images
+                       or time slots at independent positions)
+        "colocated" -> n // n_groups positions, each carrying one observation of
+                       every group (e.g. the channels of one pixel)
 
     Returns
     -------
@@ -109,18 +117,33 @@ def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
     non-contiguous (1000 + 7k), so no code can rely on id == index. orig_rank and
     orig_index record each observation's initial position.
     """
+    if group_layout not in ("random", "colocated"):
+        raise ValueError(f"unknown group_layout {group_layout!r}")
+    if n_groups < 1:
+        raise ValueError("n_groups must be >= 1")
+    if group_layout == "colocated" and n < n_groups:
+        raise ValueError("colocated groups need n >= n_groups")
     rng = np.random.default_rng(seed)
-    grid = geostationary_shape(n, domain) if pattern == "geostationary" else None
+    colocated = n_groups > 1 and group_layout == "colocated"
+    n_pos = n // n_groups if colocated else n
+    grid = geostationary_shape(n_pos, domain) if pattern == "geostationary" else None
     if grid is not None:
-        n = grid[0] * grid[1]
+        n_pos = grid[0] * grid[1]
+    n = n_pos * n_groups if colocated else n_pos
     obs = empty(n)
     obs["global_id"] = 1000 + 7 * rng.permutation(n).astype(np.int64)
-    obs["x"], obs["y"] = _positions(n, domain, pattern, rng, decomposition, grid=grid)
+    x, y = _positions(n_pos, domain, pattern, rng, decomposition, grid=grid)
+    if colocated:
+        x, y = np.repeat(x, n_groups), np.repeat(y, n_groups)
+        obs["group"] = np.tile(np.arange(n_groups), n_pos)
+    elif n_groups > 1:                 # drawn only here, so one group keeps the old stream
+        obs["group"] = rng.integers(0, n_groups, n)
+    obs["x"], obs["y"] = x, y
     obs["sigma"] = rng.uniform(*sigma_range, n)
     if departures == "white":
         obs["value"] = obs["sigma"] * rng.standard_normal(n)
     elif departures == "correlated":
-        R = build_R(obs["x"], obs["y"], obs["sigma"], c, alpha)
+        R = build_R(obs["x"], obs["y"], obs["sigma"], c, alpha, obs["group"])
         obs["value"] = cholesky(R, lower=True) @ rng.standard_normal(n)
     else:
         raise ValueError(f"unknown departures {departures!r}")

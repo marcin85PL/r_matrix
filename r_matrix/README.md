@@ -31,7 +31,7 @@ r_matrix/                          the repository
 git clone https://github.com/marcin85PL/r_matrix.git && cd r_matrix
 python3 -m venv .venv && source .venv/bin/activate      # tested with Python 3.14
 pip install -e ".[all]"                                 # editable install, plus test and notebook extras
-python -m pytest -q                                     # expect: 33 passed in a few seconds
+python -m pytest -q                                     # expect: 42 passed in a few seconds
 python -m ipykernel install --user --name r_matrix     # makes the venv available to Jupyter
 ```
 
@@ -129,7 +129,7 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 
 | Name | Where | What it is |
 |---|---|---|
-| `OBS_DTYPE` | `records.py` | fixed-size record: `global_id`, `x`, `y`, `value`, `sigma`, `orig_rank`, `orig_index` |
+| `OBS_DTYPE` | `records.py` | fixed-size record: `global_id`, `x`, `y`, `value`, `sigma`, `orig_rank`, `orig_index`, `group` |
 | `global_id` | – | unique, **non-contiguous** observation ID; the key for every lookup |
 | `owned[r]` | `redistribute` | task r's observations, **sorted by global_id**; the position is the `owned_local_index` |
 | `RedistributionPlan` | `redistribute.py` | frozen routing original ↔ spatial, for moving bare values later |
@@ -144,7 +144,7 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 - **Screen before communicating.** NaN, out-of-domain, non-finite and σ ≤ 0 records are rejected on their initial task and come back as NaN. Empty tasks are valid.
 - **Ownership contract.** Cells are `[low, high)`, and only x = xmax / y = ymax are clamped into the last cell, so every point has exactly one owner.
 - **Deterministic order everywhere.** Arrays are sorted by global_id (owned) or by (owner, global_id) (halo). Results never depend on message arrival order.
-- **Setup versus recurring.** Setup moves full 48-byte records once and freezes the plan and the maps. Each later apply moves only float64 values.
+- **Setup versus recurring.** Setup moves full 52-byte records once and freezes the plan and the maps. Each later apply moves only float64 values.
 - **Halo width is its own parameter**, separate from the correlation support.
   - The default criterion `rect` takes points within h of the task's cell rectangle.
   - The alternative `obs` takes points within h of any owned observation.
@@ -164,7 +164,7 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 
 ### Tests
 
-`tests/test_r_matrix.py` has 33 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
+`tests/test_r_matrix.py` has 42 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
 - with one task (P = 1) the result equals the global solve;
 - with a halo covering the whole domain, the result equals the global solve exactly;
 - the error decreases as h grows;
@@ -190,7 +190,7 @@ Add a test for anything new in `tests/test_r_matrix.py`, and run `python -m pyte
 3. Keep the support finite. The halo criteria and the "distributed matvec is exact when h ≥ support" test assume ρ = 0 beyond a known distance.
 
 **A different local solver** (sparse Cholesky, CG, …).
-1. Write a class with the same interface as `LocalSolver`: the constructor `(core, halo, c, alpha)`, `apply(d_core, d_halo)`, `matvec_core(z_core, z_halo)`, and the attributes `ncore`, `nhalo`, `n`, `nbytes`.
+1. Write a class with the same interface as `LocalSolver`: the constructor `(core, halo, c, alpha)`, `apply(d_core, d_halo)`, `apply_sym_parts(d_core, d_halo)`, `solve(rhs)` (local R⁻¹, used by `diagnostics.approx_matrix`), `matvec_core(z_core, z_halo)`, and the attributes `ncore`, `nhalo`, `n`, `nbytes`.
 2. Swap it in `pipeline.run`, which is the one place solvers are created. Nothing else needs to change.
 
 **A new metric.** Compute it in `diagnostics.py`, then add it to the `m` dict in `pipeline.run`. `sweep` automatically includes every scalar metric.
@@ -223,7 +223,7 @@ r_matrix/              the repository
     README.md          this guide
     RESULTS.md         findings (dated; regenerate with notebooks/02_experiments.ipynb)
     __init__.py        public API: Config, run, sweep, RunResult, MockComm, Domain, Decomposition
-    records.py         OBS_DTYPE, input screening, ID uniqueness
+    records.py         OBS_DTYPE (incl. correlation group), input screening, ID uniqueness
     generate.py        seeded mock observations (5 patterns), random initial tasks
     decomposition.py   Domain, Px × Py Decomposition, owner(), cell geometry
     comm.py            MockComm (alltoall / alltoallv / neighbour exchange) + CommStats
@@ -234,8 +234,9 @@ r_matrix/              the repository
     reference.py       global exact solve
     diagnostics.py     error metrics, load balance, halo summary
     pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep(), local_solves (plain or symmetrised)
-  tests/test_r_matrix.py           33 pytest tests
+  tests/test_r_matrix.py           42 pytest tests
   experiments/symmetric_operator.py  symmetrised operator: symmetry, definiteness, accuracy, cost (RESULTS §2.5)
+  experiments/groups.py              correlation groups: equivalence, cost (RESULTS §2.6)
   notebooks/01_walkthrough.ipynb   toy problem, step by step
   notebooks/02_experiments.ipynb   full experiments (sections 1–6)
 ```

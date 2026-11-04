@@ -53,14 +53,19 @@ def gaspari_cohn(r, c):
     return out
 
 
-def build_R(x, y, sigma, c, alpha):
+def build_R(x, y, sigma, c, alpha, group=None):
     """Dense n x n covariance R for points (x, y) with error std sigma (see module doc).
+
+    group : optional correlation-group label per point. The correlated part is kept
+        only between points of the same group, so R is block diagonal over groups.
 
     Dense storage is deliberate: the prototype targets correctness on small problems.
     A production version would exploit the sparsity of R.
     """
     xy = np.column_stack([x, y])
     C = alpha * gaspari_cohn(cdist(xy, xy), c)
+    if group is not None:
+        C *= group[:, None] == group[None, :]
     C[np.diag_indices_from(C)] += 1.0 - alpha
     return sigma[:, None] * C * sigma[None, :]
 
@@ -75,26 +80,51 @@ class LocalSolver:
     Setup (once per geometry): build R_loc and factorise it, R_loc = L L^T.
     Apply (every iteration): solve R_loc z = [d_core; d_halo] and return z[:ncore].
     Solving on the halo too, then discarding it, is the core + halo approximation.
+
+    Groups: R_loc is block diagonal over correlation groups, so each group that has
+    core observations on this rank is built, factorised and solved on its own. Memory
+    is sum_g n_g^2 and the factorisation cost sum_g n_g^3, instead of (sum_g n_g)^2
+    and (sum_g n_g)^3. Halo observations of groups without core observations here
+    cannot influence any core value; they are skipped, and their entries in every
+    local solution are 0.
     """
 
     def __init__(self, core, halo, c, alpha):
-        """core, halo : OBS_DTYPE arrays (only x, y and sigma are used)."""
+        """core, halo : OBS_DTYPE arrays (only x, y, sigma and group are used)."""
         self.ncore = len(core)
         self.nhalo = len(halo)
         loc = np.concatenate([core, halo])
-        self.R = build_R(loc["x"], loc["y"], loc["sigma"], c, alpha)
-        self.factor = cho_factor(self.R, lower=True) if len(loc) else None
+        # Per group with core observations: (local indices, number of core entries,
+        # R block, Cholesky factor). The indices are ascending, so a block's core
+        # entries come first, as in the full local ordering.
+        self.blocks = []
+        for g in np.unique(core["group"]):
+            idx = np.flatnonzero(loc["group"] == g)
+            b = loc[idx]
+            R = build_R(b["x"], b["y"], b["sigma"], c, alpha)
+            self.blocks.append((idx, int(np.count_nonzero(idx < self.ncore)), R,
+                                cho_factor(R, lower=True)))
 
     @property
     def n(self):
         """Local problem size, ncore + nhalo."""
         return self.ncore + self.nhalo
 
+    def solve(self, rhs):
+        """Block-wise R_loc^-1 rhs for rhs of shape (n,) or (n, k).
+
+        Rows belonging to groups without core observations on this rank are 0.
+        """
+        out = np.zeros_like(rhs, dtype=float)
+        for idx, _, _, factor in self.blocks:
+            out[idx] = cho_solve(factor, rhs[idx])
+        return out
+
     def apply(self, d_core, d_halo):
         """Approximate (R^-1 d) on the core. An empty rank returns an empty array."""
         if self.ncore == 0:
             return np.zeros(0)
-        z = cho_solve(self.factor, np.concatenate([d_core, d_halo]))
+        z = self.solve(np.concatenate([d_core, d_halo]))
         return z[:self.ncore]
 
     def apply_sym_parts(self, d_core, d_halo):
@@ -122,7 +152,7 @@ class LocalSolver:
         rhs = np.zeros((self.n, 2))
         rhs[:self.ncore, :] = d_core[:, None]
         rhs[self.ncore:, 0] = d_halo
-        zw = cho_solve(self.factor, rhs)
+        zw = self.solve(rhs)
         return zw[:self.ncore, 0], zw[:self.ncore, 1], zw[self.ncore:, 1]
 
     def matvec_core(self, z_core, z_halo):
@@ -133,9 +163,14 @@ class LocalSolver:
         """
         if self.ncore == 0:
             return np.zeros(0)
-        return self.R[:self.ncore] @ np.concatenate([z_core, z_halo])
+        z = np.concatenate([z_core, z_halo])
+        out = np.zeros(self.ncore)
+        for idx, k, R, _ in self.blocks:
+            out[idx[:k]] = R[:k] @ z[idx]
+        return out
 
     @property
     def nbytes(self):
-        """Memory of the stored local R (the Cholesky factor is the same size again)."""
-        return self.R.nbytes
+        """Memory of the stored local R blocks, 8 * sum_g n_g^2 bytes; the Cholesky
+        factors take as much again. With one group this is the dense local R."""
+        return sum(R.nbytes for _, _, R, _ in self.blocks)

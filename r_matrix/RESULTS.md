@@ -146,6 +146,34 @@ The full sweep (h/ℓ = 1–6, and h/ℓ = 2 for every robustness case) is in th
 - **Cost:** +20–70 % recurring traffic, growing with h/ℓ (+21 % at 1ℓ, +38 % at 2ℓ, +58 % at 4ℓ, +70 % at 6ℓ), because the halo is exchanged twice; the forward and reverse moves do not change. The second right-hand side reuses the factor, so the setup cost does not change.
 - **Verdict for the IFS design (plan decision D3):** the symmetrised core + halo operator is usable inside CG, with Jo and its gradient consistent. Choose the halo width from the error gate, which is the slightly stricter requirement for S.
 
+### 2.6 Correlation groups (added 2026-11-04)
+
+`Config(n_groups=G, group_layout="colocated" | "random")`. Each observation has a `group` (in the IFS: channel × time slot). R_ij = 0 between groups, so R is block diagonal. On each rank, every group that has core observations there gets its own local R block and its own factor. Halo observations of other groups are skipped. No rank stores an n × n matrix for all groups together. Script: `experiments/groups.py`; raw output: `experiments/groups.out`.
+
+- **Correctness (tests):**
+  - Two groups give the same result as two separate one-group runs, to 1e-13, for both layouts, plain and symmetrised. This exact equality holds for the geometric `rect` halo criterion. With `obs`, the combined halo is a superset, so results differ at the level of the halo truncation error.
+  - The symmetrised operator with groups equals ½(Ã + Ãᵀ), including ranks with no core observations.
+  - The block-wise matvec is exact, so the distributed and global residuals agree.
+  - The operator is exact when the halo covers the domain.
+  - Skipped halo groups give exact zeros.
+- **One group is bit-identical to the code before groups were added.** Checked by hand, not in the test suite, on 15 034 values over 5 configurations, including the residual and memory metrics. Only `bytes_setup` changes: about +7 %, because the record grew from 48 to 52 bytes to carry `group`.
+- **Cost at a fixed total of 3000 observations** (symmetrised, α = 0.8, h = 4ℓ; setup time from a single process, indicative):
+
+| groups | layout | rel. L2 error | largest local n (all groups) | largest local R memory | bytes / apply | setup time |
+|---:|---|---:|---:|---:|---:|---:|
+| 1 | – | 4.1e-4 | 1267 | 12.8 MB | 168 kB | 0.44 s |
+| 2 | colocated | 2.0e-4 | 1286 | 6.6 MB | 169 kB | 0.19 s |
+| 4 | colocated | 6.4e-5 | 1372 | 3.8 MB | 173 kB | 0.10 s |
+| 8 | colocated | 4.7e-5 | 1336 | 1.8 MB | 172 kB | 0.06 s |
+| 2 | random | 2.0e-4 | 1267 | 6.4 MB | 168 kB | 0.18 s |
+| 4 | random | 7.5e-5 | 1267 | 3.2 MB | 168 kB | 0.09 s |
+| 8 | random | 1.9e-5 | 1267 | 1.6 MB | 168 kB | 0.06 s |
+
+- **Memory** (local R blocks; the factors take as much again) is Σ n_g². It falls exactly as 1/G when groups are equal in size (random: 6.42, 3.21, 1.61 MB), and roughly so otherwise (colocated: 7.2× at G = 8). Setup time falls about as 1/G as well. Traffic does not change, because the same values move.
+- **Error.** The error falls as G grows. A likely cause is that each group is sparser (cf. §2.2), but the experiment does not isolate it: at G = 8, colocated and random give different errors (4.7e-5 and 1.9e-5).
+- **The implication for the IFS** is the reverse reading: adding channels or time slots as groups adds independent blocks. Memory therefore grows **linearly** with the number of groups, and so does factorisation cost, where one joint matrix would grow quadratically and cubically. The halo width is set per group by its own α and density.
+- **The halo search is still group-blind.** The halo of a rank contains nearby observations of all groups, and those of groups without core observations are skipped in the solve. A group-aware halo would save traffic only when the groups' positions differ a lot.
+
 ## 3. Status against the acceptance gates (slide 8)
 
 | Gate | Status |

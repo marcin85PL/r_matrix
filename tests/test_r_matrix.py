@@ -235,3 +235,68 @@ def test_symmetric_operator_edge_cases(overrides):
     S = operator_matrix(lambda d: res.apply_Rinv(d, tag="diag")[0], res.obs_init)
     A = approx_matrix(res)
     np.testing.assert_allclose(S, 0.5 * (A + A.T), rtol=0, atol=1e-12)
+
+
+# ---- correlation groups ---------------------------------------------------------------
+
+def test_R_is_block_diagonal_over_groups():
+    obs = np.concatenate(make_obs(300, DOM, 1, seed=8, n_groups=3, group_layout="colocated"))
+    R = build_R(obs["x"], obs["y"], obs["sigma"], 0.5, 0.8, obs["group"])
+    g = obs["group"]
+    assert np.all(R[g[:, None] != g[None, :]] == 0.0)
+    assert np.linalg.eigvalsh(R).min() > 0                    # colocated points stay SPD
+
+
+@pytest.mark.parametrize("layout", ["random", "colocated"])
+@pytest.mark.parametrize("symmetric", [False, True])
+def test_two_groups_equal_two_separate_runs(layout, symmetric):
+    # Exact equality relies on the geometric "rect" halo, which does not depend on which
+    # groups are present. With "obs" the combined halo is a superset, so results differ
+    # at the level of the halo truncation error.
+    cfg = Config(n_obs=800, h=1.0, n_groups=2, group_layout=layout, symmetric=symmetric,
+                 criterion="rect")
+    both = run(cfg)
+    z_both = np.concatenate(both.z_orig)
+    g_all = np.concatenate([o["group"] for o in both.obs_init])
+    for g in (0, 1):
+        sub = [o[o["group"] == g] for o in both.obs_init]
+        z_g = np.concatenate(run(cfg, obs_init=sub).z_orig)
+        np.testing.assert_allclose(z_both[g_all == g], z_g, rtol=0, atol=1e-13)
+
+
+def test_groups_exact_when_halo_covers_domain():
+    m = run(SMALL, n_groups=4, group_layout="colocated", h=20.0, symmetric=True).metrics
+    assert m["rel_l2"] < 1e-12
+
+
+def test_groups_without_core_are_skipped():
+    res = run(Config(n_obs=400, n_groups=5, px=8, py=6, h=1.0))
+    skipped = 0
+    for o, hh, s in zip(res.owned, res.halos, res.solvers):
+        halo_only = np.setdiff1d(hh["group"], o["group"])
+        if s.ncore == 0 or halo_only.size == 0:
+            continue
+        skipped += 1
+        mask = np.isin(np.concatenate([o["group"], hh["group"]]), halo_only)
+        z = s.solve(np.ones(s.n))
+        assert np.all(z[mask] == 0.0) and np.all(z[~mask] != 0.0)
+    assert skipped > 0                                         # the case really occurs
+    assert res.metrics["local_R_bytes_max"] < 8 * res.metrics["local_n_max"] ** 2
+
+
+def test_groups_symmetric_operator_and_residual():
+    res = run(Config(n_obs=240, n_groups=3, group_layout="colocated", h=1.0, symmetric=True,
+                     px=6, py=4, pattern="clustered"))
+    assert any(s.ncore == 0 for s in res.solvers)
+    S = operator_matrix(lambda d: res.apply_Rinv(d, tag="diag")[0], res.obs_init)
+    A = approx_matrix(res)
+    np.testing.assert_allclose(S, 0.5 * (A + A.T), rtol=0, atol=1e-12)
+    m = res.metrics                                            # block-wise matvec is exact
+    assert m["residual_distributed"] == pytest.approx(m["residual_global"], rel=1e-10)
+
+
+def test_group_generator_rejects_bad_input():
+    with pytest.raises(ValueError):
+        make_obs(10, DOM, 1, n_groups=0)
+    with pytest.raises(ValueError):
+        make_obs(3, DOM, 1, n_groups=4, group_layout="colocated")

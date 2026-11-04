@@ -28,7 +28,7 @@ def global_solve(owned, c, alpha):
     """
     allobs = np.concatenate(owned)
     allobs = allobs[np.argsort(allobs["global_id"])]
-    R = build_R(allobs["x"], allobs["y"], allobs["sigma"], c, alpha)
+    R = build_R(allobs["x"], allobs["y"], allobs["sigma"], c, alpha, allobs["group"])
     factor = cho_factor(R, lower=True)
     z = cho_solve(factor, allobs["value"])
     return allobs["global_id"], z, R, factor

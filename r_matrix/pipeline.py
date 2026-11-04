@@ -51,6 +51,8 @@ class Config:
             7 obs per l^2.
     Observation generator (generate.make_obs)
         seed, pattern, departures, empty_init_ranks, skew
+        n_groups, group_layout : correlation groups ("random" or "colocated");
+            errors are correlated only within a group
     Covariance (covariance.build_R)
         c : Gaspari-Cohn length scale l; correlations vanish beyond 2c
         alpha : correlated fraction of the error variance (1 - alpha is the nugget)
@@ -72,6 +74,8 @@ class Config:
     departures: str = "correlated"
     empty_init_ranks: tuple = ()
     skew: Optional[float] = None
+    n_groups: int = 1
+    group_layout: str = "random"
     c: float = 0.5
     alpha: float = 0.8
     h: float = 1.0
@@ -172,8 +176,12 @@ class RunResult:
         return out
 
 
-def run(cfg=Config(), **overrides):
+def run(cfg=Config(), obs_init=None, **overrides):
     """Run the prototype once. Keyword overrides replace Config fields, e.g. run(h=2.0).
+
+    obs_init : optional per-rank OBS_DTYPE arrays to use instead of generating them
+        (one array per rank of the px x py decomposition; "value" is d). The generator
+        fields of the Config (n_obs, seed, pattern, ...) are then ignored.
 
     Metrics (RunResult.metrics)
     ---------------------------
@@ -186,7 +194,8 @@ def run(cfg=Config(), **overrides):
     Load and halo:
         owned : {min, mean, max, cv} of owned counts
         halo_total, candidates_total, halo_core_ratio_mean/peak, local_n_max
-        local_R_bytes_max, map_bytes_total, halo_peers_max
+        local_R_bytes_max (stored local R blocks; the factors take as much again),
+            map_bytes_total, halo_peers_max
     Communication, in bytes counted by MockComm:
         bytes_setup : everything tagged "setup:*"
         bytes_apply : one application of R^-1 (forward + halo + reverse)
@@ -201,9 +210,11 @@ def run(cfg=Config(), **overrides):
     comm = MockComm(P)
     t = {}
 
-    obs_init = make_obs(cfg.n_obs, cfg.domain, P, seed=cfg.seed, pattern=cfg.pattern,
-                        decomposition=decomp, departures=cfg.departures, c=cfg.c,
-                        alpha=cfg.alpha, empty_ranks=cfg.empty_init_ranks, skew=cfg.skew)
+    if obs_init is None:
+        obs_init = make_obs(cfg.n_obs, cfg.domain, P, seed=cfg.seed, pattern=cfg.pattern,
+                            decomposition=decomp, departures=cfg.departures, c=cfg.c,
+                            alpha=cfg.alpha, empty_ranks=cfg.empty_init_ranks, skew=cfg.skew,
+                            n_groups=cfg.n_groups, group_layout=cfg.group_layout)
 
     # ---- setup (once per geometry) --------------------------------------------------
     t0 = time.perf_counter()

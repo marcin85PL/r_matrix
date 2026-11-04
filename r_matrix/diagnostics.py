@@ -1,6 +1,5 @@
 """Error metrics, cost / load-balance summaries, and dense operator matrices for analysis."""
 import numpy as np
-from scipy.linalg import cho_solve
 
 
 def error_metrics(z, z_ref):
@@ -38,7 +37,7 @@ def approx_matrix(res):
         rows = np.searchsorted(gids, o["global_id"])
         cols = np.searchsorted(gids, np.concatenate([o["global_id"], hh["global_id"]]))
         # Rows ncore of the symmetric R_loc^-1 = transpose of its first ncore columns.
-        A[np.ix_(rows, cols)] = cho_solve(s.factor, np.eye(s.n)[:, :s.ncore]).T
+        A[np.ix_(rows, cols)] = s.solve(np.eye(s.n)[:, :s.ncore]).T
     return A
 
 

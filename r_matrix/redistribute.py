@@ -22,7 +22,7 @@ Inside a minimisation, the vector that R^-1 acts on changes every iteration, but
 the observation locations do not. ``RedistributionPlan.forward`` and
 ``RedistributionPlan.reverse`` therefore move bare float64 values using the frozen
 counts and permutations. There is no re-screening, no owner computation and no
-count exchange, and each value costs 8 bytes instead of a 48-byte record.
+count exchange, and each value costs 8 bytes instead of a 52-byte record.
 """
 from dataclasses import dataclass
 

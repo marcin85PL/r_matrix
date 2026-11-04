@@ -16,6 +16,8 @@ sigma       float64  Observation-error standard deviation; R_ii = sigma_i^2.
 orig_rank   int32    The rank the observation lived on before redistribution, and
 orig_index  int32    its position there. Together they are the return address used
                      when results are sent back to the original layout.
+group       int32    Correlation group (e.g. channel x time slot). Errors of observations
+                     in different groups are uncorrelated; 0 when there is one group.
 """
 import numpy as np
 
@@ -27,6 +29,7 @@ OBS_DTYPE = np.dtype([
     ("sigma", "f8"),
     ("orig_rank", "i4"),
     ("orig_index", "i4"),
+    ("group", "i4"),
 ])
 
 
