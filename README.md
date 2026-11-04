@@ -46,7 +46,7 @@ toy commit. The C++ library tests (`2026-r-package`) read them.
 
 ```bash
 python -m r_matrix.export --list
-python -m r_matrix.export all <outdir>        # or one case name; writes <outdir>/<case>/
+python -m r_matrix.export all <outdir>        # or one case name; refuses a dirty toy unless --allow-dirty
 python -m pytest tests/test_export.py         # round-trip and consistency tests
 ```
 
