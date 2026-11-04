@@ -208,6 +208,39 @@ The full sweep (h/ℓ = 1–6, and h/ℓ = 2 for every robustness case) is in th
 - **The poles and the dateline cost a little accuracy.** The special pattern packs extra points near the poles, which raises the local density and the halo/core ratio.
 - **The polar wedges are the weak point of the band × sector partition.** With 8×6 tasks, the 16 polar-band cells (8 per pole) are thin wedges meeting at the poles. The peak halo/core ratio reaches 13.8 at 4ℓ and 24 at 6ℓ, and traffic is 2.5× that of 4×3. Equal-regions partitions with polar caps, or density-balanced patches, should do better; that is the comparison of Phase A step 5b.
 
+### 2.8 R-patches separate from MPI tasks: the reproducible mode (added 2026-11-04)
+
+`Config(px, py, n_tasks=T, patch_map="block" | "round_robin")`. The px × py decomposition defines **R-patches**, and every stage runs per patch. Patches are mapped to T tasks deterministically, several per task. The observations of a task in the original layout sit at its home patch (its lowest-numbered one). `MockComm` counts traffic between tasks only, since traffic between patches of one task is free. `n_tasks=None` keeps one patch per task.
+
+- **The answer depends only on the patch layout.** For a fixed layout, z is **bit-identical** for T = 1, 4, 5 (round-robin), 12, 24 and one patch per task. The error metrics are too, because they are reduced in global-ID order. This was checked on the plane, with 3 colocated groups on clustered data, and on the sphere with poles and dateline (tests). The initial placement of observations differs with T in every case.
+  - Nothing had to be made deterministic for this. All orderings were already keyed on (patch, global ID): owned data sorted by ID, halos by (owner patch, ID), adjoint sums in source-patch order, one factor per (patch, group).
+  - It also relies on the dense BLAS/LAPACK kernels giving identical results for identical matrices, which holds in this single-process mock.
+  - This is the prototype of plan decision D2's flag: **fix the patch layout, and the answer no longer depends on NPROC**.
+- `n_tasks=None` is bit-identical to the code before this change, on 21 059 values over 7 configurations. Checked by hand.
+
+**Cost of the reproducible mode** (`experiments/patches.py`, raw output `experiments/patches.out`; 3000 obs on the plane, symmetrised, α = 0.8, h = 4ℓ). It compares a fixed layout of 8 × 6 = 48 patches with the relaxed mode, one patch per task:
+
+| tasks | mode | patches | rel. L2 error | largest patch n | largest task memory | bytes / apply | messages / apply | dedup saving: halo update | dedup saving: whole apply |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | relaxed | 4 | 2.8e-4 | 1436 | 16.5 MB | 79 kB | 48 | – | – |
+| 4 | reproducible | 48 | 6.8e-4 | 759 | 41.6 MB | 233 kB | 44 | 67 % | 28 % |
+| 12 | relaxed | 12 | 4.1e-4 | 1267 | 12.8 MB | 168 kB | 380 | – | – |
+| 12 | reproducible | 48 | 6.8e-4 | 759 | 14.9 MB | 350 kB | 432 | 53 % | 23 % |
+| 48 | either | 48 | 6.8e-4 | 759 | 4.6 MB | 440 kB | 4586 | 0 % | 0 % |
+
+Bytes count every patch-to-patch transfer between different tasks. Messages are one per non-empty task pair, i.e. all data between two tasks packed into one message.
+
+- **Accuracy follows the patch layout, not the task count.** More patches mean more internal edges. The halo must be sized for the fixed layout.
+- **Overhead when few tasks hold many patches.** A task stores the halos of all its patches, and these overlap: 2.5× the memory of relaxed mode at 4 tasks. Each halo value is also sent once per patch that needs it.
+  - Sending each value of the forward halo update **once per task** would save the bytes in the last two columns: 67 % of that update and 28 % of a whole application at 4 tasks, 53 % and 23 % at 12. The script computes these and checks them against the recorded halo bytes.
+  - The forward and reverse moves cannot be reduced this way.
+  - **The adjoint halo exchange of the symmetric operator is left per patch.** Pre-summing it per task would change the floating-point summation order and break the bit-identity. Deduplicating it too would need an order-independent (reproducible) summation, such as the IFS's `ORDER_INDEP_GLOBAL_SUM`.
+  - The mock does not deduplicate. Its halo bytes are therefore upper bounds for a task-level implementation; its forward and reverse bytes are exact.
+- **Implication for the library:**
+  - build the forward halo map at task level (the union of the task's patch halos), and scatter locally to the patches. Keep the adjoint per patch, or sum it in an order-independent way;
+  - choose the fixed patch count for the largest task count that will be used, accepting the overhead at smaller counts;
+  - or offer the relaxed mode when reproducibility is not required.
+
 ## 3. Status against the acceptance gates (slide 8)
 
 | Gate | Status |

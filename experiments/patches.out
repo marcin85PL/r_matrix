@@ -1,0 +1,8 @@
+| tasks | mode | patches | rel. L2 error | largest patch n | largest task memory | bytes / apply | messages / apply | owned per task CV | dedup saving, halo update | dedup saving, whole apply |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4 | relaxed | 4 | 2.8e-04 | 1436 | 16.5 MB | 79 kB | 48 | 0.01 | 0% | 0% |
+| 4 | reproducible | 48 | 6.8e-04 | 759 | 41.6 MB | 233 kB | 44 | 0.02 | 67% | 28% |
+| 12 | relaxed | 12 | 4.1e-04 | 1267 | 12.8 MB | 168 kB | 380 | 0.05 | 0% | 0% |
+| 12 | reproducible | 48 | 6.8e-04 | 759 | 14.9 MB | 350 kB | 432 | 0.04 | 53% | 23% |
+| 48 | relaxed | 48 | 6.8e-04 | 759 | 4.6 MB | 440 kB | 4586 | 0.12 | 0% | 0% |
+| 48 | reproducible | 48 | 6.8e-04 | 759 | 4.6 MB | 440 kB | 4586 | 0.12 | 0% | 0% |

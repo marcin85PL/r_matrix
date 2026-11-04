@@ -29,13 +29,23 @@ Every call is tagged with a *phase* name, such as "setup:halo:records" or
 * messages: the number of non-empty off-rank (source, destination) pairs;
 * max_peers: the largest number of distinct non-empty destinations on any one rank.
 
-Self-sends (rank to itself) are free, as they would be in a real code. Phases whose
-names start with "setup" happen once per observation geometry. Phases whose names
-start with "recurring" happen at every application of R^-1, and they are the cost
-that matters inside a minimisation.
+Self-sends (rank to itself) are free, as they would be in a real code.
+
+Patches and tasks: a "rank" of MockComm is an R-patch. Several patches may live on
+one MPI task (``task_of``). Traffic between patches of the same task is then free,
+and bytes, messages and peers are counted between tasks. With the default (one patch
+per task) a rank is a task, as before. Note the different bases: messages are one per
+non-empty task pair (all patch-to-patch data between two tasks packed into one
+message), while bytes sum every patch-to-patch transfer, so a value needed by two
+patches of one task is counted twice (no per-task deduplication; see RESULTS 2.8).
+
+Phases whose names start with "setup" happen once per observation geometry. Phases
+whose names start with "recurring" happen at every application of R^-1, and they are
+the cost that matters inside a minimisation.
 """
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -53,12 +63,21 @@ class PhaseStats:
 class CommStats:
     """Communication counters of every phase seen by a MockComm."""
     phases: dict = field(default_factory=lambda: defaultdict(PhaseStats))
+    task_of: Optional[np.ndarray] = None   # patch -> task map; None: one patch per task
 
     def record(self, phase, pair_bytes):
         """Add one call; pair_bytes[s][d] is the number of bytes rank s sends to rank d."""
         st = self.phases[phase]
         st.calls += 1
-        pb = np.asarray(pair_bytes, dtype=np.int64).copy()
+        pb = np.asarray(pair_bytes, dtype=np.int64)
+        if self.task_of is None:
+            pb = pb.copy()
+        else:                                       # aggregate patch pairs to task pairs
+            t = np.asarray(self.task_of)
+            T = int(t.max()) + 1
+            agg = np.zeros((T, T), dtype=np.int64)
+            np.add.at(agg, (t[:, None], t[None, :]), pb)
+            pb = agg
         np.fill_diagonal(pb, 0)                     # self-sends are not communication
         st.bytes += int(pb.sum())
         st.messages += int((pb > 0).sum())
@@ -75,11 +94,16 @@ class CommStats:
 
 
 class MockComm:
-    """A P-rank communicator simulated in one process."""
+    """A P-rank communicator simulated in one process.
 
-    def __init__(self, size):
+    task_of : optional array of length size giving the MPI task of each rank (patch).
+        Communication is then counted between tasks only (see the module docstring).
+    """
+
+    def __init__(self, size, task_of=None):
         self.size = size
-        self.stats = CommStats()
+        self.task_of = None if task_of is None else np.asarray(task_of, dtype=np.int64)
+        self.stats = CommStats(task_of=self.task_of)
 
     def alltoall(self, sendcounts, phase):
         """Exchange one integer per rank pair (typically message sizes).

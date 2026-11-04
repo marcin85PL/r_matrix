@@ -17,7 +17,7 @@ git clone https://github.com/marcin85PL/r_matrix.git
 cd r_matrix
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all]"
-python -m pytest -q                                   # 68 tests, a few seconds
+python -m pytest -q                                   # 77 tests, a few seconds
 python -m ipykernel install --user --name r_matrix   # optional: Jupyter kernel for the notebooks
 ```
 

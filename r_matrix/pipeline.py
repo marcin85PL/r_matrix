@@ -64,6 +64,11 @@ class Config:
     symmetric : apply the symmetrised operator (A~ + A~^T) / 2 instead of A~. It costs a
         second right-hand side in each local solve and one reverse (adjoint) halo
         exchange per application.
+    n_tasks, patch_map : MPI tasks, and how the px x py R-patches map to them. None
+        means one patch per task (P = px * py tasks). Otherwise every stage still runs
+        per patch, and patches are assigned to tasks by "block" (contiguous ranges)
+        or "round_robin". Results depend only on the patch layout, not on n_tasks.
+        Communication is counted between tasks.
     geometry : "plane" (domain, Euclidean) or "sphere" (lon, lat in radians, chord
         distance in km on the Earth sphere; domain is ignored and px x py is the
         equal-area SphereDecomposition; c and h are then in km)
@@ -86,6 +91,8 @@ class Config:
     criterion: str = "rect"
     halo_method: str = "brute"
     symmetric: bool = False
+    n_tasks: Optional[int] = None
+    patch_map: str = "block"
     geometry: str = "plane"
     reference: bool = True
 
@@ -111,11 +118,47 @@ def local_solves(comm, maps, solvers, d_core, d_halo, symmetric, tag="recurring"
     return [0.5 * (zc + wc + b) for (zc, wc, _), b in zip(parts, back)]
 
 
+def _to_patches(per_task, home, n_patches):
+    """Place per-task arrays at their tasks' home patches; other patches get empty arrays."""
+    if len(per_task) != len(home):
+        raise ValueError(f"expected one array per task ({len(home)}), got {len(per_task)}")
+    out = [per_task[0][:0]] * n_patches
+    for t, h in enumerate(home):
+        out[h] = per_task[t]
+    return out
+
+
+def patch_task_map(n_patches, n_tasks, how="block"):
+    """Task of every patch, and the home patch of every task.
+
+    block        contiguous ranges: patch p -> task floor(p * n_tasks / n_patches)
+    round_robin  patch p -> task p mod n_tasks
+    Every task gets at least one patch. Its lowest-numbered patch is its "home", where
+    its observations in the original layout are held (an MPI task holds them itself;
+    in the mock, traffic within a task is free, so the choice costs nothing).
+    """
+    if not 1 <= n_tasks <= n_patches:
+        raise ValueError(f"need 1 <= n_tasks <= n_patches, got {n_tasks} tasks, {n_patches} patches")
+    p = np.arange(n_patches)
+    if how == "block":
+        task_of = p * n_tasks // n_patches
+    elif how == "round_robin":
+        task_of = p % n_tasks
+    else:
+        raise ValueError(f"unknown patch_map {how!r}")
+    home = np.array([np.flatnonzero(task_of == t)[0] for t in range(n_tasks)])
+    return task_of, home
+
+
 @dataclass
 class RunResult:
     """Everything a run produced. Lists are indexed by rank.
 
-    obs_init   : records on the initial (random) ranks
+    Per-task lists (obs_init, z_orig, z_ref_orig) have one entry per MPI task. Per-patch
+    lists (owned, halos, ..., z_owned) have one entry per R-patch. Without n_tasks,
+    the two are the same.
+
+    obs_init   : records on the initial (random) tasks
     owned      : records after redistribution, sorted by global_id
     halos, halo_owner, halo_stats : from halo discovery
     maps, plan, solvers : the frozen setup, reused by apply_Rinv
@@ -144,6 +187,12 @@ class RunResult:
     metrics: dict
     ref_gids: Optional[np.ndarray] = None     # sorted global IDs of the reference solve
     ref_factor: Optional[tuple] = None        # Cholesky factor of the global R
+    task_of: Optional[np.ndarray] = None      # task of each patch
+    home: Optional[np.ndarray] = None         # home patch of each task
+
+    def to_patches(self, per_task):
+        """Per-task list -> per-patch list (values at each task's home patch)."""
+        return _to_patches(per_task, self.home, len(self.owned))
 
     def apply_Rinv(self, d_orig, tag="recurring"):
         """Approximate R^-1 d for a vector living on the original ranks.
@@ -152,11 +201,12 @@ class RunResult:
         reverse, using only the frozen setup. d_orig[r] has one entry per record
         initially on rank r. It returns (z_orig, z_owned).
         """
-        d_core = self.plan.forward(self.comm, d_orig, phase=f"{tag}:forward")
+        d_core = self.plan.forward(self.comm, self.to_patches(d_orig), phase=f"{tag}:forward")
         d_halo = halo_exchange(self.comm, self.maps, d_core, phase=f"{tag}:halo")
         z_owned = local_solves(self.comm, self.maps, self.solvers, d_core, d_halo,
                                self.config.symmetric, tag)
-        return self.plan.reverse(self.comm, z_owned, phase=f"{tag}:reverse"), z_owned
+        z_patch = self.plan.reverse(self.comm, z_owned, phase=f"{tag}:reverse")
+        return [z_patch[h] for h in self.home], z_owned
 
     def apply_Rinv_exact(self, d_orig):
         """Exact R^-1 d via the global factor, laid out like d_orig (needs reference=True)."""
@@ -184,8 +234,8 @@ class RunResult:
 def run(cfg=Config(), obs_init=None, **overrides):
     """Run the prototype once. Keyword overrides replace Config fields, e.g. run(h=2.0).
 
-    obs_init : optional per-rank OBS_DTYPE arrays to use instead of generating them
-        (one array per rank of the px x py decomposition; "value" is d). The generator
+    obs_init : optional per-task OBS_DTYPE arrays to use instead of generating them
+        (one array per task: n_tasks, or px * py when n_tasks is None; "value" is d). The generator
         fields of the Config (n_obs, seed, pattern, ...) are then ignored.
 
     Metrics (RunResult.metrics)
@@ -197,8 +247,12 @@ def run(cfg=Config(), obs_init=None, **overrides):
         residual_distributed : the same residual from the halo matvec; it equals
             residual_global when matvec_exact (h >= 2c)
     Load and halo:
-        owned : {min, mean, max, cv} of owned counts
+        owned : {min, mean, max, cv} of owned counts per patch
+        owned_task : the same per task (equal to owned without n_tasks)
         halo_total, candidates_total, halo_core_ratio_mean/peak, local_n_max
+        With n_tasks, halo_*, local_*, map_bytes_total and halo_peers_max are per
+        patch (intra-task entries included); owned_task and all communication
+        counters are per task.
         local_R_bytes_max (stored local R blocks; the factors take as much again),
             map_bytes_total, halo_peers_max
     Communication, in bytes counted by MockComm:
@@ -217,11 +271,16 @@ def run(cfg=Config(), obs_init=None, **overrides):
     else:
         decomp = Decomposition(cfg.domain, cfg.px, cfg.py)
     P = decomp.size
-    comm = MockComm(P)
+    T = P if cfg.n_tasks is None else cfg.n_tasks
+    if cfg.n_tasks is None:
+        task_of, home = np.arange(P), np.arange(P)
+    else:
+        task_of, home = patch_task_map(P, T, cfg.patch_map)
+    comm = MockComm(P, None if cfg.n_tasks is None else task_of)
     t = {}
 
     if obs_init is None:
-        obs_init = make_obs(cfg.n_obs, cfg.domain, P, seed=cfg.seed, pattern=cfg.pattern,
+        obs_init = make_obs(cfg.n_obs, cfg.domain, T, seed=cfg.seed, pattern=cfg.pattern,
                             decomposition=decomp, departures=cfg.departures, c=cfg.c,
                             alpha=cfg.alpha, empty_ranks=cfg.empty_init_ranks, skew=cfg.skew,
                             n_groups=cfg.n_groups, group_layout=cfg.group_layout,
@@ -229,9 +288,12 @@ def run(cfg=Config(), obs_init=None, **overrides):
 
     # ---- setup (once per geometry) --------------------------------------------------
     t0 = time.perf_counter()
-    owned, rejected, plan = redistribute(comm, decomp, obs_init)
+    if len(obs_init) != T:
+        raise ValueError(f"obs_init has {len(obs_init)} task arrays, expected {T}")
+    obs_patch = _to_patches(obs_init, home, P)
+    owned, rejected, plan = redistribute(comm, decomp, obs_patch)
     t["setup_redistribute"] = time.perf_counter() - t0
-    check_redistribution(obs_init, owned, rejected, decomp)
+    check_redistribution(obs_patch, owned, rejected, decomp)
 
     t0 = time.perf_counter()
     halos, halo_owner, hstats = discover_halos(comm, decomp, owned, cfg.h, cfg.criterion,
@@ -250,14 +312,15 @@ def run(cfg=Config(), obs_init=None, **overrides):
     # (The same steps as RunResult.apply_Rinv, inlined so that each stage is timed.)
     d_orig = [o["value"].copy() for o in obs_init]
     t0 = time.perf_counter()
-    d_core = plan.forward(comm, d_orig)
+    d_core = plan.forward(comm, _to_patches(d_orig, home, P))
     d_halo = halo_exchange(comm, maps, d_core)
     t["apply_comm_in"] = time.perf_counter() - t0
     t0 = time.perf_counter()
     z_owned = local_solves(comm, maps, solvers, d_core, d_halo, cfg.symmetric)
     t["apply_solve"] = time.perf_counter() - t0
     t0 = time.perf_counter()
-    z_orig = plan.reverse(comm, z_owned)
+    z_patch = plan.reverse(comm, z_owned)
+    z_orig = [z_patch[h] for h in home]
     t["apply_comm_out"] = time.perf_counter() - t0
 
     # ---- distributed residual ||R z~ - d|| / ||d|| (exact matvec when h >= 2c) --------
@@ -275,6 +338,8 @@ def run(cfg=Config(), obs_init=None, **overrides):
         "residual_distributed": float(np.linalg.norm(res) / np.linalg.norm(d_all)),
         "matvec_exact": bool(cfg.h >= 2 * cfg.c),
         "owned": load_balance([len(o) for o in owned]),
+        "owned_task": load_balance(np.bincount(task_of, weights=[len(o) for o in owned],
+                                               minlength=T)),
         **halo_summary(hstats),
         "local_R_bytes_max": int(max(s.nbytes for s in solvers)),
         "map_bytes_total": int(sum(mp.nbytes for mp in maps)),
@@ -299,8 +364,10 @@ def run(cfg=Config(), obs_init=None, **overrides):
             idx = np.searchsorted(ref_gids, o["global_id"])
             ok = np.isfinite(z_orig[r])
             z_ref_orig[r][ok] = zref[idx[ok]]
-        z = np.concatenate(z_orig)
-        zr = np.concatenate(z_ref_orig)
+        # Reduce in global-ID order, so the metrics too are independent of n_tasks.
+        g_order = np.argsort(np.concatenate([o["global_id"] for o in obs_init]))
+        z = np.concatenate(z_orig)[g_order]
+        zr = np.concatenate(z_ref_orig)[g_order]
         ok = np.isfinite(z)
         m.update(error_metrics(z[ok], zr[ok]))
         # True global residual, independent of the halo matvec.
@@ -310,19 +377,22 @@ def run(cfg=Config(), obs_init=None, **overrides):
         m["time_reference"] = t["reference"]
 
     return RunResult(cfg, decomp, obs_init, owned, halos, halo_owner, hstats, maps, plan,
-                     solvers, z_owned, z_orig, z_ref_orig, comm, t, m, ref_gids, ref_factor)
+                     solvers, z_owned, z_orig, z_ref_orig, comm, t, m, ref_gids, ref_factor,
+                     task_of, home)
 
 
 def sweep(param, values, cfg=Config(), **fixed):
     """Run once per value of one Config field (with the other overrides in `fixed`).
 
     Returns a list of flat metric dicts (ready for pandas.DataFrame). The nested
-    "owned" load-balance dict is flattened into owned_min, owned_mean, and so on.
+    load-balance dicts "owned" and "owned_task" are flattened into owned_min,
+    owned_task_min, and so on.
     """
     rows = []
     for v in values:
         res = run(cfg, **{**fixed, param: v})
         row = {param: v, **{k: val for k, val in res.metrics.items() if not isinstance(val, dict)}}
-        row.update({f"owned_{k}": val for k, val in res.metrics["owned"].items()})
+        for name in ("owned", "owned_task"):
+            row.update({f"{name}_{k}": val for k, val in res.metrics[name].items()})
         rows.append(row)
     return rows

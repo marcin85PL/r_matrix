@@ -447,3 +447,85 @@ def test_sphere_groups_equal_separate_runs():
         sub = [o[o["group"] == g] for o in both.obs_init]
         np.testing.assert_allclose(z_both[g_all == g], np.concatenate(run(cfg, obs_init=sub).z_orig),
                                    rtol=0, atol=1e-13)
+
+
+# ---- R-patches separate from MPI tasks (reproducible mode) ---------------------------
+
+def test_patch_task_map():
+    from r_matrix.pipeline import patch_task_map
+    t, home = patch_task_map(12, 5, "block")
+    assert t.tolist() == [0, 0, 0, 1, 1, 2, 2, 2, 3, 3, 4, 4] and home.tolist() == [0, 3, 5, 8, 10]
+    t, home = patch_task_map(12, 5, "round_robin")
+    assert t.tolist() == [0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1] and home.tolist() == [0, 1, 2, 3, 4]
+    with pytest.raises(ValueError):
+        patch_task_map(12, 13)
+
+
+def _z_by_gid(res):
+    g = np.concatenate([o["global_id"] for o in res.obs_init])
+    z = np.concatenate(res.z_orig)
+    order = np.argsort(g)
+    return g[order], z[order]
+
+
+@pytest.mark.parametrize("base", [
+    Config(n_obs=800, h=1.5, symmetric=True),
+    Config(n_obs=800, h=1.5, symmetric=True, n_groups=3, group_layout="colocated", pattern="clustered"),
+    Config(n_obs=800, geometry="sphere", c=1000.0, h=3000.0, px=6, py=4, symmetric=True,
+           pattern="poles_dateline"),
+    Config(n_obs=800, h=1.3, criterion="obs", halo_method="kdtree", skew=0.5),
+], ids=["plane", "groups", "sphere", "plain-obs-kdtree-skew"])
+def test_results_bit_identical_for_any_task_count(base):
+    # Bitwise equality also relies on BLAS/LAPACK giving identical results for identical
+    # matrices, which holds in this single process.
+    r0 = run(base, n_tasks=1)
+    g0, z0 = _z_by_gid(r0)
+    cases = [(4, "block"), (12, "block"), (5, "round_robin"), (None, "block")]
+    if base.geometry == "sphere":
+        cases.append((24, "block"))
+    for T, how in cases:
+        r = run(base, n_tasks=T, patch_map=how,
+                empty_init_ranks=(1,) if T not in (1, None) and base.skew else ())
+        g, z = _z_by_gid(r)
+        assert np.array_equal(g, g0) and np.array_equal(z, z0)        # bitwise, not approx
+        assert r.metrics["rel_l2"] == r0.metrics["rel_l2"]            # reduced in gid order
+
+
+def test_traffic_counted_between_tasks_only():
+    one = run(SMALL, n_tasks=1).metrics
+    assert one["bytes_apply"] == 0 and one["messages_apply"] == 0 and one["bytes_setup"] == 0
+    four, all12 = run(SMALL, n_tasks=4).metrics, run(SMALL).metrics
+    assert 0 < four["bytes_apply"] < all12["bytes_apply"]
+    assert four["owned_task"]["mean"] == pytest.approx(SMALL.n_obs / 4)
+
+
+def test_patches_apply_Rinv_reuses_setup_and_checks_input():
+    res = run(SMALL, n_tasks=5, patch_map="round_robin")
+    z, _ = res.apply_Rinv([o["value"] for o in res.obs_init], tag="test")
+    for a, b in zip(z, res.z_orig):
+        np.testing.assert_array_equal(a, b)
+    with pytest.raises(ValueError, match="task arrays"):
+        run(SMALL, n_tasks=5, obs_init=res.obs_init[:4])
+    with pytest.raises(ValueError, match="one array per task"):
+        res.apply_Rinv([o["value"] for o in res.obs_init] + [np.zeros(0)])
+    for a, b in zip(res.apply_Rinv_exact([o["value"] for o in res.obs_init]), res.z_ref_orig):
+        np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
+
+
+def test_commstats_aggregates_to_task_pairs():
+    from r_matrix.comm import CommStats
+    pb = np.array([[0, 5, 7, 0],          # patches 0,1 on task 0; patches 2,3 on task 1
+                   [3, 0, 0, 2],
+                   [0, 0, 0, 4],
+                   [1, 0, 6, 0]])
+    st = CommStats(task_of=np.array([0, 0, 1, 1]))
+    st.record("x", pb)
+    ph = st.phases["x"]
+    assert ph.bytes == 7 + 2 + 1             # only cross-task entries
+    assert ph.messages == 2 and ph.max_peers == 1
+
+
+def test_sweep_flattens_task_metrics():
+    from r_matrix import sweep
+    rows = sweep("h", [1.0], Config(n_obs=300, n_tasks=4))
+    assert rows[0]["owned_task_mean"] == pytest.approx(75.0) and rows[0]["owned_mean"] == pytest.approx(25.0)

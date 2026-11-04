@@ -31,7 +31,7 @@ r_matrix/                          the repository
 git clone https://github.com/marcin85PL/r_matrix.git && cd r_matrix
 python3 -m venv .venv && source .venv/bin/activate      # tested with Python 3.14
 pip install -e ".[all]"                                 # editable install, plus test and notebook extras
-python -m pytest -q                                     # expect: 68 passed in a few seconds
+python -m pytest -q                                     # expect: 77 passed in a few seconds
 python -m ipykernel install --user --name r_matrix     # makes the venv available to Jupyter
 ```
 
@@ -52,6 +52,8 @@ print(res.metrics["rel_l2"])        # relative error against the exact global so
 ## 2. The one convention you must know
 
 **Every per-task quantity is a Python list of length P, and element `r` is what MPI task `r` holds.**
+
+(With `Config(n_tasks=T)`, the lists that describe the spatial layout (`owned`, `halos`, `solvers`, `maps`, ...) are per **R-patch**, and several patches belong to one task (`RunResult.task_of`). The lists in the original layout (`obs_init`, `z_orig`) are per task. Without `n_tasks`, a patch is a task. See RESULTS §2.8.)
 
 ```python
 owned[3]          # the observations owned by task 3 (a numpy structured array)
@@ -164,7 +166,7 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 
 ### Tests
 
-`tests/test_r_matrix.py` has 68 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
+`tests/test_r_matrix.py` has 77 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
 - with one task (P = 1) the result equals the global solve;
 - with a halo covering the whole domain, the result equals the global solve exactly;
 - the error decreases as h grows;
@@ -227,18 +229,19 @@ r_matrix/              the repository
     generate.py        seeded mock observations (5 plane patterns, 3 sphere patterns), groups, random initial tasks
     geometry.py        plane / sphere coordinates, chord distance, longitude wrapping
     decomposition.py   Domain, Px × Py Decomposition, equal-area SphereDecomposition, owner(), cell geometry
-    comm.py            MockComm (alltoall / alltoallv / neighbour exchange) + CommStats
+    comm.py            MockComm (alltoall / alltoallv / neighbour exchange) + CommStats, per-task accounting
     redistribute.py    setup redistribution (steps A–E), RedistributionPlan (forward/reverse)
     halo.py            geometric candidate push + exact filter ("rect" / "obs", brute / k-d tree)
     commmap.py         RankMap, setup handshake, recurring halo_exchange
     covariance.py      Gaspari–Cohn, build_R, LocalSolver (Cholesky on core + halo)
     reference.py       global exact solve
     diagnostics.py     error metrics, load balance, halo summary
-    pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep(), local_solves (plain or symmetrised)
-  tests/test_r_matrix.py           68 pytest tests
+    pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep(), local_solves (plain or symmetrised), patch_task_map
+  tests/test_r_matrix.py           77 pytest tests
   experiments/symmetric_operator.py  symmetrised operator: symmetry, definiteness, accuracy, cost (RESULTS §2.5)
   experiments/groups.py              correlation groups: equivalence, cost (RESULTS §2.6)
   experiments/sphere.py              the sphere: accuracy and cost against the plane (RESULTS §2.7)
+  experiments/patches.py             R-patches separate from tasks: reproducible vs relaxed mode (RESULTS §2.8)
   notebooks/01_walkthrough.ipynb   toy problem, step by step
   notebooks/02_experiments.ipynb   full experiments (sections 1–6)
 ```
