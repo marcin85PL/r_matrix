@@ -31,7 +31,7 @@ r_matrix/                          the repository
 git clone https://github.com/marcin85PL/r_matrix.git && cd r_matrix
 python3 -m venv .venv && source .venv/bin/activate      # tested with Python 3.14
 pip install -e ".[all]"                                 # editable install, plus test and notebook extras
-python -m pytest -q                                     # expect: 42 passed in a few seconds
+python -m pytest -q                                     # expect: 68 passed in a few seconds
 python -m ipykernel install --user --name r_matrix     # makes the venv available to Jupyter
 ```
 
@@ -164,7 +164,7 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 
 ### Tests
 
-`tests/test_r_matrix.py` has 42 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
+`tests/test_r_matrix.py` has 68 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
 - with one task (P = 1) the result equals the global solve;
 - with a halo covering the whole domain, the result equals the global solve exactly;
 - the error decreases as h grows;
@@ -195,7 +195,7 @@ Add a test for anything new in `tests/test_r_matrix.py`, and run `python -m pyte
 
 **A new metric.** Compute it in `diagnostics.py`, then add it to the `m` dict in `pipeline.run`. `sweep` automatically includes every scalar metric.
 
-**A different decomposition** (weighted, recursive bisection). The pipeline uses `Decomposition` only through `size`, `domain`, `owner`, `cell_rect`, `ranks_intersecting` and `rect_distance`. The `boundary` pattern in `generate.py` also reads `px`, `py`, `dx` and `dy`. A new class providing these works with the rest of the pipeline, but it must still give each task a rectangular cell, because the halo code relies on that.
+**A different decomposition** (weighted, recursive bisection, equal regions). The pipeline uses a decomposition only through `size`, `domain` (input screening), `geometry`, `points`, `owner`, `rect_distance` (exact distance to the cell, for the `rect` halo), `candidate_ranks` and `push_mask` (which ranks to push which records to; a superset of the halo is fine). `Decomposition` (plane) and `SphereDecomposition` are the two examples. Cells need not be rectangles. The `boundary` pattern in `generate.py` also reads `px`, `py`, `dx` and `dy` (plane only).
 
 **Real MPI.** The data layouts and communication calls map directly onto `MPI_Alltoall(v)`. The per-task `for r in range(P)` loops must become SPMD code, where each process runs only its own `r`. See the docstring of `comm.py`.
 
@@ -222,10 +222,11 @@ r_matrix/              the repository
   r_matrix/            the package
     README.md          this guide
     RESULTS.md         findings (dated; regenerate with notebooks/02_experiments.ipynb)
-    __init__.py        public API: Config, run, sweep, RunResult, MockComm, Domain, Decomposition
+    __init__.py        public API: Config, run, sweep, RunResult, MockComm, Domain, Decomposition, SphereDecomposition
     records.py         OBS_DTYPE (incl. correlation group), input screening, ID uniqueness
-    generate.py        seeded mock observations (5 patterns), random initial tasks
-    decomposition.py   Domain, Px × Py Decomposition, owner(), cell geometry
+    generate.py        seeded mock observations (5 plane patterns, 3 sphere patterns), groups, random initial tasks
+    geometry.py        plane / sphere coordinates, chord distance, longitude wrapping
+    decomposition.py   Domain, Px × Py Decomposition, equal-area SphereDecomposition, owner(), cell geometry
     comm.py            MockComm (alltoall / alltoallv / neighbour exchange) + CommStats
     redistribute.py    setup redistribution (steps A–E), RedistributionPlan (forward/reverse)
     halo.py            geometric candidate push + exact filter ("rect" / "obs", brute / k-d tree)
@@ -234,9 +235,10 @@ r_matrix/              the repository
     reference.py       global exact solve
     diagnostics.py     error metrics, load balance, halo summary
     pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep(), local_solves (plain or symmetrised)
-  tests/test_r_matrix.py           42 pytest tests
+  tests/test_r_matrix.py           68 pytest tests
   experiments/symmetric_operator.py  symmetrised operator: symmetry, definiteness, accuracy, cost (RESULTS §2.5)
   experiments/groups.py              correlation groups: equivalence, cost (RESULTS §2.6)
+  experiments/sphere.py              the sphere: accuracy and cost against the plane (RESULTS §2.7)
   notebooks/01_walkthrough.ipynb   toy problem, step by step
   notebooks/02_experiments.ipynb   full experiments (sections 1–6)
 ```

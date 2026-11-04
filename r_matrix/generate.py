@@ -30,6 +30,7 @@ from .covariance import build_R
 from .records import empty
 
 PATTERNS = ("uniform", "clustered", "coincident", "boundary", "geostationary")
+PATTERNS_SPHERE = ("uniform", "clustered", "poles_dateline")
 
 
 def geostationary_shape(n, domain):
@@ -80,13 +81,51 @@ def _positions(n, domain, pattern, rng, decomposition=None, frac=0.2, n_clusters
     return x, y
 
 
+def _positions_sphere(n, pattern, rng, frac=0.2, n_clusters=6):
+    """Draw n (lon, lat) positions in radians on the sphere.
+
+    uniform         uniform in area (lon uniform, sin(lat) uniform)
+    clustered       80 % in n_clusters tight blobs (width about 0.03 rad), 20 % uniform
+    poles_dateline  stresses the special places: of the 20 % special points, a quarter
+                    lie exactly on lon = +pi, a quarter exactly on lon = -pi, a quarter
+                    within 0.03 rad of a pole (some exactly on it), and a quarter have
+                    lon shifted by +2 pi, i.e. stored in [pi, 3 pi) as an ODB using
+                    [0, 2 pi) would
+    """
+    if pattern not in PATTERNS_SPHERE:
+        raise ValueError(f"unknown sphere pattern {pattern!r}; expected one of {PATTERNS_SPHERE}")
+    lon = rng.uniform(-np.pi, np.pi, n)
+    lat = np.arcsin(rng.uniform(-1.0, 1.0, n))
+    if pattern == "clustered":
+        m = int(round((1 - frac) * n))
+        cen = rng.standard_normal((n_clusters, 3))
+        cen /= np.linalg.norm(cen, axis=1, keepdims=True)
+        v = cen[rng.integers(0, n_clusters, m)] + 0.03 * rng.standard_normal((m, 3))
+        v /= np.linalg.norm(v, axis=1, keepdims=True)
+        lon[:m], lat[:m] = np.arctan2(v[:, 1], v[:, 0]), np.arcsin(np.clip(v[:, 2], -1, 1))
+    elif pattern == "poles_dateline":
+        q = int(round(frac * n)) // 4
+        lon[:q] = np.pi
+        lon[q:2 * q] = -np.pi
+        if q > 0:                      # n < 20 leaves no special points
+            sign = rng.choice([-1.0, 1.0], q)
+            lat[2 * q:3 * q] = sign * (np.pi / 2 - rng.uniform(0.0, 0.03, q))
+            k = max(q // 4, 1)
+            lat[2 * q:2 * q + k] = sign[:k] * np.pi / 2
+            lon[3 * q:4 * q] += 2.0 * np.pi
+    return lon, lat
+
+
 def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
              departures="white", c=None, alpha=None, sigma_range=(0.8, 1.2),
-             empty_ranks=(), skew=None, n_groups=1, group_layout="random"):
+             empty_ranks=(), skew=None, n_groups=1, group_layout="random",
+             geometry="plane"):
     """Generate n observations scattered at random over nranks initial MPI tasks.
 
     Parameters
     ----------
+    geometry : "plane" (positions in domain) or "sphere" (lon, lat in radians from
+        _positions_sphere; domain is ignored; patterns PATTERNS_SPHERE)
     n : number of observations (approximate for pattern="geostationary", and rounded
         down to a multiple of n_groups for group_layout="colocated")
     domain : decomposition.Domain
@@ -126,13 +165,17 @@ def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
     rng = np.random.default_rng(seed)
     colocated = n_groups > 1 and group_layout == "colocated"
     n_pos = n // n_groups if colocated else n
-    grid = geostationary_shape(n_pos, domain) if pattern == "geostationary" else None
+    sphere = geometry == "sphere"
+    grid = geostationary_shape(n_pos, domain) if pattern == "geostationary" and not sphere else None
     if grid is not None:
         n_pos = grid[0] * grid[1]
     n = n_pos * n_groups if colocated else n_pos
     obs = empty(n)
     obs["global_id"] = 1000 + 7 * rng.permutation(n).astype(np.int64)
-    x, y = _positions(n_pos, domain, pattern, rng, decomposition, grid=grid)
+    if sphere:
+        x, y = _positions_sphere(n_pos, pattern, rng)
+    else:
+        x, y = _positions(n_pos, domain, pattern, rng, decomposition, grid=grid)
     if colocated:
         x, y = np.repeat(x, n_groups), np.repeat(y, n_groups)
         obs["group"] = np.tile(np.arange(n_groups), n_pos)
@@ -143,7 +186,7 @@ def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
     if departures == "white":
         obs["value"] = obs["sigma"] * rng.standard_normal(n)
     elif departures == "correlated":
-        R = build_R(obs["x"], obs["y"], obs["sigma"], c, alpha, obs["group"])
+        R = build_R(obs["x"], obs["y"], obs["sigma"], c, alpha, obs["group"], geometry)
         obs["value"] = cholesky(R, lower=True) @ rng.standard_normal(n)
     else:
         raise ValueError(f"unknown departures {departures!r}")

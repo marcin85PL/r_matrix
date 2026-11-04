@@ -59,15 +59,13 @@ def _push_candidates(comm, decomp, owned, h):
     P = comm.size
     sendbufs, sendcounts = [], []
     for s, o in enumerate(owned):
-        x0, x1, y0, y1 = decomp.cell_rect(s)
         parts, counts = [], np.zeros(P, dtype=np.int64)
-        # A rank whose expanded cell contains one of my points must have a cell
-        # within h of my cell, so only those ranks are examined.
-        for d in decomp.ranks_intersecting(x0 - h, x1 + h, y0 - h, y1 + h):
+        # Only ranks that can need my points are examined (on the plane: those whose
+        # cell is within h of mine). push_mask is a superset of the exact halo.
+        for d in decomp.candidate_ranks(s, h):
             if d == s:
                 continue
-            a0, a1, b0, b1 = decomp.cell_rect(d)
-            m = (o["x"] >= a0 - h) & (o["x"] <= a1 + h) & (o["y"] >= b0 - h) & (o["y"] <= b1 + h)
+            m = decomp.push_mask(d, o["x"], o["y"], h)
             parts.append((d, o[m]))
             counts[d] = m.sum()
         parts.sort(key=lambda t: t[0])                    # pack by destination rank
@@ -79,26 +77,27 @@ def _push_candidates(comm, decomp, owned, h):
     return recvbufs, owners
 
 
-def _within_obs_brute(cand, core, h, chunk=2048):
+def _within_obs_brute(cand, core, h, decomp, chunk=2048):
     """Mask of candidates within distance h of at least one core observation."""
     keep = np.zeros(len(cand), dtype=bool)
     if len(core) == 0:
         return keep
-    cxy = np.column_stack([core["x"], core["y"]])
+    cxy = decomp.points(core["x"], core["y"])
     for i in range(0, len(cand), chunk):                  # chunked to bound memory
-        p = np.column_stack([cand["x"][i:i + chunk], cand["y"][i:i + chunk]])
+        p = decomp.points(cand["x"][i:i + chunk], cand["y"][i:i + chunk])
         d2 = ((p[:, None, :] - cxy[None, :, :]) ** 2).sum(-1)
         keep[i:i + chunk] = np.sqrt(d2.min(axis=1)) <= h
     return keep
 
 
-def _within_obs_kdtree(cand, core, h):
-    """The same mask as _within_obs_brute, using a k-d tree on the candidates."""
+def _within_obs_kdtree(cand, core, h, decomp):
+    """The same mask as _within_obs_brute, using a k-d tree on the candidates
+    (on the sphere: a 3-D tree, so chord distances, no special case at poles or dateline)."""
     keep = np.zeros(len(cand), dtype=bool)
     if len(core) == 0 or len(cand) == 0:
         return keep
-    tree = cKDTree(np.column_stack([cand["x"], cand["y"]]))
-    for hits in tree.query_ball_point(np.column_stack([core["x"], core["y"]]), r=h):
+    tree = cKDTree(decomp.points(cand["x"], cand["y"]))
+    for hits in tree.query_ball_point(decomp.points(core["x"], core["y"]), r=h):
         keep[hits] = True
     return keep
 
@@ -109,7 +108,7 @@ def discover_halos(comm, decomp, owned, h, criterion="rect", method="brute"):
     Parameters
     ----------
     comm : comm.MockComm
-    decomp : decomposition.Decomposition
+    decomp : decomposition.Decomposition or SphereDecomposition
     owned : per-rank owned records, from redistribute.redistribute
     h : halo width, in the same units as x, y
     criterion : "rect" or "obs"
@@ -128,7 +127,8 @@ def discover_halos(comm, decomp, owned, h, criterion="rect", method="brute"):
         if criterion == "rect":
             keep = decomp.rect_distance(r, cand["x"], cand["y"]) <= h
         elif criterion == "obs":
-            keep = (_within_obs_kdtree if method == "kdtree" else _within_obs_brute)(cand, owned[r], h)
+            keep = (_within_obs_kdtree if method == "kdtree" else _within_obs_brute)(cand, owned[r], h,
+                                                                               decomp)
         else:
             raise ValueError(f"unknown criterion {criterion!r}")
         c, o = cand[keep], own[keep]

@@ -174,6 +174,40 @@ The full sweep (h/ℓ = 1–6, and h/ℓ = 2 for every robustness case) is in th
 - **The implication for the IFS** is the reverse reading: adding channels or time slots as groups adds independent blocks. Memory therefore grows **linearly** with the number of groups, and so does factorisation cost, where one joint matrix would grow quadratically and cubically. The halo width is set per group by its own α and density.
 - **The halo search is still group-blind.** The halo of a rank contains nearby observations of all groups, and those of groups without core observations are skipped in the solve. A group-aware halo would save traffic only when the groups' positions differ a lot.
 
+### 2.7 The sphere (added 2026-11-04)
+
+`Config(geometry="sphere")`. Positions are (lon, lat) in radians, as in the IFS ODB. Longitudes outside [−π, π) are wrapped and remain valid. Distances are chords on the Earth sphere, in km, and GC of the chordal distance stays positive definite (`geometry.py`).
+
+**Decomposition.** `SphereDecomposition(px, py)`: py equal-area latitude bands (uniform in sin φ) × px longitude sectors, numbered as on the plane. It gives the **exact** chordal distance from a point to a cell, in closed form over the cell's two parallels and two meridian arcs. The geometric `rect` halo is therefore exact everywhere, including across 180° and around the poles. The `obs` halo uses a 3-D k-d tree.
+
+**Tests** (26 new):
+- ownership at 180°E/W, at 2π and at the poles;
+- equal-area cells;
+- the exact cell distance against dense sampling, never larger than the distance to any cell point. This covers polar wedges, a middle cell, cells π and 2π wide (px = 2, 1), a single band (py = 1), and points exactly on sector edges or at the poles;
+- redistribution with no rejections, for unwrapped longitudes too;
+- both halo criteria against brute force, and the k-d tree against brute force;
+- exactness with one task or with a halo larger than the sphere;
+- a matvec that is exact at h = 2ℓ across poles and dateline;
+- the error falling with h;
+- the exact solution unchanged when longitudes are shifted (so unwrapped longitudes are accepted);
+- the `rect` halo contains the `obs` halo for the same h;
+- groups on the sphere.
+
+**The plane is unchanged:** bit-identical to the code before the sphere on 21 059 values over 7 configurations (both halo criteria, k-d tree, groups, setup and halo byte counts). Checked by hand.
+
+**Accuracy and cost** (`experiments/sphere.py`, raw output `experiments/sphere.out`). 3000 obs on the whole sphere, ℓ = c = 1000 km (5.9 obs per ℓ², against 6.9 on the plane), symmetrised, α = 0.8:
+
+| geometry | tasks | pattern | h/ℓ = 2 | 3 | 4 | 5 | 6 | peak halo/core at 4ℓ | bytes/apply at 4ℓ |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| plane | 4×3 | uniform | 6.7e-3 | 1.8e-3 | 4.1e-4 | 1.1e-4 | 2.5e-5 | 4.7 | 168 kB |
+| sphere | 4×3 | uniform | 7.0e-3 | 1.7e-3 | 3.7e-4 | 7.9e-5 | 1.6e-5 | 4.0 | 202 kB |
+| sphere | 4×3 | poles_dateline | 8.5e-3 | 2.0e-3 | 4.6e-4 | 1.1e-4 | 2.7e-5 | 4.8 | 203 kB |
+| sphere | 8×6 | uniform | 1.1e-2 | 2.6e-3 | 5.9e-4 | 1.3e-4 | 2.7e-5 | 13.8 | 506 kB |
+
+- **The approximation behaves on the sphere as on the plane.** The error falls by about 4× per ℓ of halo (4.1–4.9× on the sphere, 3.7–4.4× on the plane in this run), and h ≈ 4ℓ gives about 4e-4 at α = 0.8. The distributed matvec equals the global one for every h ≥ 2ℓ, in every case.
+- **The poles and the dateline cost a little accuracy.** The special pattern packs extra points near the poles, which raises the local density and the halo/core ratio.
+- **The polar wedges are the weak point of the band × sector partition.** With 8×6 tasks, the 16 polar-band cells (8 per pole) are thin wedges meeting at the poles. The peak halo/core ratio reaches 13.8 at 4ℓ and 24 at 6ℓ, and traffic is 2.5× that of 4×3. Equal-regions partitions with polar caps, or density-balanced patches, should do better; that is the comparison of Phase A step 5b.
+
 ## 3. Status against the acceptance gates (slide 8)
 
 | Gate | Status |
@@ -192,6 +226,6 @@ The full sweep (h/ℓ = 1–6, and h/ℓ = 2 for every robustness case) is in th
 - **The operator is non-symmetric.** Addressed by the symmetrised variant ½(Ã + Ãᵀ) (§2.5). Overlapping-Schwarz-style weighting of the halo results remains an untested alternative.
 - **Model realism:**
   - add channels, inter-channel correlation and time slots (slide 1 assumptions 1 and 2);
-  - add a spherical or periodic domain;
+  - ~~add a spherical or periodic domain~~ (done: §2.7);
   - add clear-sky gaps (cloud masks) to the geostationary pattern.
 - **Decomposition:** weighted or recursive-bisection partitions for clustered observations.

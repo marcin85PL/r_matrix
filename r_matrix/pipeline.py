@@ -33,9 +33,10 @@ from scipy.linalg import cho_solve
 from .comm import MockComm
 from .commmap import build_comm_maps, halo_exchange, halo_exchange_adjoint
 from .covariance import LocalSolver
-from .decomposition import Decomposition, Domain
+from .decomposition import Decomposition, Domain, SphereDecomposition
 from .diagnostics import error_metrics, halo_summary, load_balance
 from .generate import make_obs
+from .geometry import GEOMETRIES
 from .halo import discover_halos
 from .redistribute import check_redistribution, redistribute
 from .reference import global_solve
@@ -63,6 +64,9 @@ class Config:
     symmetric : apply the symmetrised operator (A~ + A~^T) / 2 instead of A~. It costs a
         second right-hand side in each local solve and one reverse (adjoint) halo
         exchange per application.
+    geometry : "plane" (domain, Euclidean) or "sphere" (lon, lat in radians, chord
+        distance in km on the Earth sphere; domain is ignored and px x py is the
+        equal-area SphereDecomposition; c and h are then in km)
     reference : also run the global exact solve (needed for the error metrics)
     """
     n_obs: int = 3000
@@ -82,6 +86,7 @@ class Config:
     criterion: str = "rect"
     halo_method: str = "brute"
     symmetric: bool = False
+    geometry: str = "plane"
     reference: bool = True
 
     @property
@@ -205,7 +210,12 @@ def run(cfg=Config(), obs_init=None, **overrides):
     Time (single process, indicative): time_setup, time_apply, time_reference
     """
     cfg = replace(cfg, **overrides)
-    decomp = Decomposition(cfg.domain, cfg.px, cfg.py)
+    if cfg.geometry not in GEOMETRIES:
+        raise ValueError(f"unknown geometry {cfg.geometry!r}; expected one of {GEOMETRIES}")
+    if cfg.geometry == "sphere":
+        decomp = SphereDecomposition(cfg.px, cfg.py)
+    else:
+        decomp = Decomposition(cfg.domain, cfg.px, cfg.py)
     P = decomp.size
     comm = MockComm(P)
     t = {}
@@ -214,7 +224,8 @@ def run(cfg=Config(), obs_init=None, **overrides):
         obs_init = make_obs(cfg.n_obs, cfg.domain, P, seed=cfg.seed, pattern=cfg.pattern,
                             decomposition=decomp, departures=cfg.departures, c=cfg.c,
                             alpha=cfg.alpha, empty_ranks=cfg.empty_init_ranks, skew=cfg.skew,
-                            n_groups=cfg.n_groups, group_layout=cfg.group_layout)
+                            n_groups=cfg.n_groups, group_layout=cfg.group_layout,
+                            geometry=cfg.geometry)
 
     # ---- setup (once per geometry) --------------------------------------------------
     t0 = time.perf_counter()
@@ -232,7 +243,7 @@ def run(cfg=Config(), obs_init=None, **overrides):
     t["setup_map"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    solvers = [LocalSolver(o, hh, cfg.c, cfg.alpha) for o, hh in zip(owned, halos)]
+    solvers = [LocalSolver(o, hh, cfg.c, cfg.alpha, cfg.geometry) for o, hh in zip(owned, halos)]
     t["setup_factorise"] = time.perf_counter() - t0
 
     # ---- recurring: apply R^-1 to the departures living on the original ranks ---------
@@ -281,7 +292,7 @@ def run(cfg=Config(), obs_init=None, **overrides):
     ref_gids = ref_factor = None
     if cfg.reference:
         t0 = time.perf_counter()
-        ref_gids, zref, R, ref_factor = global_solve(owned, cfg.c, cfg.alpha)
+        ref_gids, zref, R, ref_factor = global_solve(owned, cfg.c, cfg.alpha, cfg.geometry)
         t["reference"] = time.perf_counter() - t0
         # Align z* with the original layout, and compare where z~ came back.
         for r, o in enumerate(obs_init):

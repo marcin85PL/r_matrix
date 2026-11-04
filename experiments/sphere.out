@@ -1,0 +1,26 @@
+| geometry | tasks | pattern | h/l | rel. L2 error | residual distr. = global | peak halo/core | largest local n | bytes / apply |
+|---|---|---|---:|---:|---|---:|---:|---:|
+| plane | 4x3 | uniform | 1 | 2.4e-02 | no (h < 2l) | 0.9 | 440 | 68 kB |
+| plane | 4x3 | uniform | 2 | 6.7e-03 | yes | 1.9 | 696 | 98 kB |
+| plane | 4x3 | uniform | 3 | 1.8e-03 | yes | 3.2 | 981 | 131 kB |
+| plane | 4x3 | uniform | 4 | 4.1e-04 | yes | 4.7 | 1267 | 168 kB |
+| plane | 4x3 | uniform | 5 | 1.1e-04 | yes | 6.4 | 1642 | 210 kB |
+| plane | 4x3 | uniform | 6 | 2.5e-05 | yes | 8.3 | 2057 | 255 kB |
+| sphere | 4x3 | uniform | 1 | 2.9e-02 | no (h < 2l) | 0.8 | 432 | 75 kB |
+| sphere | 4x3 | uniform | 2 | 7.0e-03 | yes | 1.7 | 641 | 113 kB |
+| sphere | 4x3 | uniform | 3 | 1.7e-03 | yes | 2.8 | 888 | 155 kB |
+| sphere | 4x3 | uniform | 4 | 3.7e-04 | yes | 4.0 | 1142 | 202 kB |
+| sphere | 4x3 | uniform | 5 | 7.9e-05 | yes | 5.2 | 1394 | 252 kB |
+| sphere | 4x3 | uniform | 6 | 1.6e-05 | yes | 6.5 | 1693 | 306 kB |
+| sphere | 4x3 | poles_dateline | 1 | 3.4e-02 | no (h < 2l) | 1.4 | 569 | 85 kB |
+| sphere | 4x3 | poles_dateline | 2 | 8.5e-03 | yes | 2.4 | 742 | 120 kB |
+| sphere | 4x3 | poles_dateline | 3 | 2.0e-03 | yes | 3.6 | 951 | 160 kB |
+| sphere | 4x3 | poles_dateline | 4 | 4.6e-04 | yes | 4.8 | 1202 | 203 kB |
+| sphere | 4x3 | poles_dateline | 5 | 1.1e-04 | yes | 6.0 | 1457 | 249 kB |
+| sphere | 4x3 | poles_dateline | 6 | 2.7e-05 | yes | 7.3 | 1717 | 298 kB |
+| sphere | 8x6 | uniform | 1 | 4.3e-02 | no (h < 2l) | 2.3 | 183 | 122 kB |
+| sphere | 8x6 | uniform | 2 | 1.1e-02 | yes | 5.2 | 321 | 225 kB |
+| sphere | 8x6 | uniform | 3 | 2.6e-03 | yes | 9.0 | 498 | 354 kB |
+| sphere | 8x6 | uniform | 4 | 5.9e-04 | yes | 13.8 | 697 | 506 kB |
+| sphere | 8x6 | uniform | 5 | 1.3e-04 | yes | 18.8 | 934 | 676 kB |
+| sphere | 8x6 | uniform | 6 | 2.7e-05 | yes | 24.3 | 1175 | 868 kB |

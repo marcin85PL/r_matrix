@@ -1,11 +1,13 @@
 import numpy as np
 import pytest
+from scipy.spatial import cKDTree
 
-from r_matrix import Config, Decomposition, Domain, MockComm, run
+from r_matrix import Config, Decomposition, Domain, MockComm, SphereDecomposition, run
 from r_matrix.commmap import build_comm_maps, halo_exchange, halo_exchange_adjoint
 from r_matrix.covariance import build_R, gaspari_cohn
 from r_matrix.diagnostics import approx_matrix, operator_matrix
 from r_matrix.generate import make_obs
+from r_matrix.geometry import EARTH_RADIUS, points
 from r_matrix.halo import discover_halos
 from r_matrix.redistribute import check_redistribution, redistribute
 
@@ -300,3 +302,148 @@ def test_group_generator_rejects_bad_input():
         make_obs(10, DOM, 1, n_groups=0)
     with pytest.raises(ValueError):
         make_obs(3, DOM, 1, n_groups=4, group_layout="colocated")
+
+
+# ---- sphere ---------------------------------------------------------------------------
+
+SDEC = SphereDecomposition(4, 3)
+SPH = Config(geometry="sphere", n_obs=600, c=1000.0, h=2000.0)   # km; about 1 obs per l^2
+
+
+def _sphere_setup(n=800, seed=1, pattern="poles_dateline"):
+    obs = make_obs(n, None, SDEC.size, seed=seed, pattern=pattern, geometry="sphere")
+    comm = MockComm(SDEC.size)
+    owned, rejected, plan = redistribute(comm, SDEC, obs)
+    return comm, obs, owned, rejected, plan
+
+
+def test_sphere_owner_wraps_dateline_and_handles_poles():
+    lon = np.array([np.pi, -np.pi, 2 * np.pi, 3 * np.pi / 2, -np.pi / 2, 0.3, 0.3])
+    lat = np.array([0.0, 0.0, 0.0, 0.0, 0.0, np.pi / 2, -np.pi / 2])
+    own = SDEC.owner(lon, lat)
+    assert own[0] == own[1] == 4                      # 180E = 180W, sector 0, middle band
+    assert own[2] == SDEC.owner(0.0, 0.0)              # 2 pi = 0
+    assert own[3] == own[4]                            # 270E = 90W
+    assert own[5] // SDEC.px == SDEC.py - 1 and own[6] // SDEC.px == 0
+
+
+def test_sphere_cells_have_equal_area():
+    rng = np.random.default_rng(3)
+    z, lon = rng.uniform(-1, 1, 200000), rng.uniform(-np.pi, np.pi, 200000)
+    counts = np.bincount(SDEC.owner(lon, np.arcsin(z)), minlength=SDEC.size)
+    assert counts.std() / counts.mean() < 0.02
+
+
+@pytest.mark.parametrize("px, py, rank", [(4, 3, 0), (4, 3, 5), (4, 3, 10),   # S wedge, middle, N wedge
+                                          (1, 3, 1), (2, 1, 0), (2, 2, 3), (8, 6, 47)])
+def test_sphere_rect_distance_matches_dense_sampling(px, py, rank):
+    dec = SphereDecomposition(px, py)
+    rng = np.random.default_rng(rank + 10 * px)
+    lon0, lon1, lat0, lat1 = dec.cell_rect(rank)
+    m = 600
+    g_lon, g_lat = np.meshgrid(np.linspace(lon0, lon1, m), np.linspace(lat0, lat1, m))
+    cell = points(g_lon.ravel(), g_lat.ravel(), "sphere")
+    lon = rng.uniform(-np.pi, 3 * np.pi, 300)                       # includes unwrapped lon
+    lat = np.arcsin(rng.uniform(-1, 1, 300))
+    lat[:10] = np.pi / 2                                            # some exactly at the poles
+    lat[10:20] = -np.pi / 2
+    edges = -np.pi + 2 * np.pi * np.arange(px + 1) / px
+    lon[20:40] = edges[rng.integers(0, px + 1, 20)] + 2 * np.pi * rng.integers(-1, 2, 20)
+    p = points(lon, lat, "sphere")
+    brute = cKDTree(cell).query(p)[0]                               # nearest sample point
+    exact = dec.rect_distance(rank, lon, lat)
+    # Every cell point is within half a grid diagonal of a sample point.
+    tol = EARTH_RADIUS * 0.5 * np.hypot((lon1 - lon0) / (m - 1), (lat1 - lat0) / (m - 1)) + 1e-6
+    assert np.all(exact <= brute + 1e-6)                            # never larger than any cell point
+    assert np.all(brute - exact <= tol)
+    inside = dec.owner(lon, lat) == rank
+    assert np.all(exact[inside] == 0.0)
+
+
+def test_sphere_rect_distance_accepts_scalars():
+    assert SDEC.rect_distance(5, 0.0, 0.0) == pytest.approx(SDEC.rect_distance(5, np.array([0.0]), np.array([0.0]))[0])
+
+
+def test_sphere_rect_halo_contains_obs_halo():
+    comm, _, owned, _, _ = _sphere_setup(pattern="clustered")
+    rect, _, _ = discover_halos(comm, SDEC, owned, 1200.0, "rect")
+    obs, _, _ = discover_halos(comm, SDEC, owned, 1200.0, "obs")
+    for a, b in zip(rect, obs):
+        assert np.isin(b["global_id"], a["global_id"]).all()
+
+
+def test_sphere_small_n_and_bad_geometry():
+    assert sum(len(o) for o in make_obs(10, None, 2, pattern="poles_dateline", geometry="sphere")) == 10
+    with pytest.raises(ValueError, match="geometry"):
+        run(SPH, geometry="spher")
+
+
+@pytest.mark.parametrize("pattern", ["uniform", "clustered", "poles_dateline"])
+def test_sphere_redistribution_invariants(pattern):
+    comm, obs, owned, rejected, _ = _sphere_setup(pattern=pattern)
+    assert sum(len(r) for r in rejected) == 0          # lon outside [-pi, pi) is valid
+    check_redistribution(obs, owned, rejected, SDEC)
+
+
+@pytest.mark.parametrize("criterion", ["rect", "obs"])
+def test_sphere_halo_matches_global_brute_force(criterion):
+    comm, _, owned, _, _ = _sphere_setup()
+    h = 1500.0
+    halos, _, _ = discover_halos(comm, SDEC, owned, h, criterion)
+    for r in range(SDEC.size):
+        others = np.concatenate([o for s, o in enumerate(owned) if s != r])
+        if criterion == "rect":
+            keep = SDEC.rect_distance(r, others["x"], others["y"]) <= h
+        else:
+            a = points(others["x"], others["y"], "sphere")
+            b = points(owned[r]["x"], owned[r]["y"], "sphere")
+            keep = np.linalg.norm(a[:, None] - b[None], axis=2).min(axis=1) <= h
+        np.testing.assert_array_equal(np.sort(halos[r]["global_id"]), np.sort(others["global_id"][keep]))
+
+
+def test_sphere_kdtree_and_brute_halos_agree():
+    comm, _, owned, _, _ = _sphere_setup(pattern="clustered")
+    a, _, _ = discover_halos(comm, SDEC, owned, 900.0, "obs", "brute")
+    b, _, _ = discover_halos(comm, SDEC, owned, 900.0, "obs", "kdtree")
+    for r in range(SDEC.size):
+        np.testing.assert_array_equal(a[r]["global_id"], b[r]["global_id"])
+
+
+@pytest.mark.parametrize("overrides", [dict(px=1, py=1), dict(h=13000.0), dict(h=13000.0, symmetric=True)])
+def test_sphere_exact_cases(overrides):        # 13000 km > the sphere's diameter
+    assert run(SPH, pattern="poles_dateline", **overrides).metrics["rel_l2"] < 1e-12
+
+
+@pytest.mark.parametrize("pattern", ["uniform", "poles_dateline"])
+def test_sphere_matvec_exact_when_halo_covers_support(pattern):
+    m = run(SPH, pattern=pattern).metrics            # h = 2c
+    assert m["matvec_exact"]
+    assert m["residual_distributed"] == pytest.approx(m["residual_global"], rel=1e-10)
+
+
+def test_sphere_error_decreases_with_halo():
+    errs = [run(SPH, h=h, symmetric=True).metrics["rel_l2"] for h in (500.0, 1000.0, 2000.0, 3000.0)]
+    assert all(b < a for a, b in zip(errs, errs[1:]))
+
+
+def test_sphere_exact_solution_invariant_to_longitude_shift():
+    res = run(SPH, pattern="poles_dateline", reference=True)
+    rot = [o.copy() for o in res.obs_init]
+    for o in rot:
+        o["x"] += 1.234                                # shift lon (rotation about the polar axis);
+                                                       # also makes some lon > pi, i.e. unwrapped
+    res2 = run(SPH, obs_init=rot)
+    for a, b in zip(res.z_ref_orig, res2.z_ref_orig):
+        np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-12)
+
+
+def test_sphere_groups_equal_separate_runs():
+    cfg = Config(geometry="sphere", n_obs=600, c=1000.0, h=2000.0, n_groups=2,
+                               symmetric=True, pattern="poles_dateline")
+    both = run(cfg)
+    z_both = np.concatenate(both.z_orig)
+    g_all = np.concatenate([o["group"] for o in both.obs_init])
+    for g in (0, 1):
+        sub = [o[o["group"] == g] for o in both.obs_init]
+        np.testing.assert_allclose(z_both[g_all == g], np.concatenate(run(cfg, obs_init=sub).z_orig),
+                                   rtol=0, atol=1e-13)

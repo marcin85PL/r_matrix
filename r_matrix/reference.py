@@ -11,13 +11,13 @@ from scipy.linalg import cho_factor, cho_solve
 from .covariance import build_R
 
 
-def global_solve(owned, c, alpha):
+def global_solve(owned, c, alpha, geometry="plane"):
     """Exact R^-1 d over all observations.
 
     Parameters
     ----------
     owned : per-rank owned records (their "value" field is d)
-    c, alpha : covariance parameters, as in covariance.build_R
+    c, alpha, geometry : covariance parameters, as in covariance.build_R
 
     Returns
     -------
@@ -28,7 +28,8 @@ def global_solve(owned, c, alpha):
     """
     allobs = np.concatenate(owned)
     allobs = allobs[np.argsort(allobs["global_id"])]
-    R = build_R(allobs["x"], allobs["y"], allobs["sigma"], c, alpha, allobs["group"])
+    R = build_R(allobs["x"], allobs["y"], allobs["sigma"], c, alpha, allobs["group"],
+                geometry)
     factor = cho_factor(R, lower=True)
     z = cho_solve(factor, allobs["value"])
     return allobs["global_id"], z, R, factor

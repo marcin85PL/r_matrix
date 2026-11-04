@@ -28,6 +28,8 @@ import numpy as np
 from scipy.linalg import cho_factor, cho_solve
 from scipy.spatial.distance import cdist
 
+from .geometry import points
+
 
 def gaspari_cohn(r, c):
     """Gaspari & Cohn (1999, eq. 4.10) fifth-order piecewise rational correlation.
@@ -53,16 +55,18 @@ def gaspari_cohn(r, c):
     return out
 
 
-def build_R(x, y, sigma, c, alpha, group=None):
+def build_R(x, y, sigma, c, alpha, group=None, geometry="plane"):
     """Dense n x n covariance R for points (x, y) with error std sigma (see module doc).
 
     group : optional correlation-group label per point. The correlated part is kept
         only between points of the same group, so R is block diagonal over groups.
+    geometry : "plane" (Euclidean distance) or "sphere" (x, y = lon, lat in radians;
+        chord distance in km, see geometry.py)
 
     Dense storage is deliberate: the prototype targets correctness on small problems.
     A production version would exploit the sparsity of R.
     """
-    xy = np.column_stack([x, y])
+    xy = points(x, y, geometry)
     C = alpha * gaspari_cohn(cdist(xy, xy), c)
     if group is not None:
         C *= group[:, None] == group[None, :]
@@ -89,7 +93,7 @@ class LocalSolver:
     local solution are 0.
     """
 
-    def __init__(self, core, halo, c, alpha):
+    def __init__(self, core, halo, c, alpha, geometry="plane"):
         """core, halo : OBS_DTYPE arrays (only x, y, sigma and group are used)."""
         self.ncore = len(core)
         self.nhalo = len(halo)
@@ -101,7 +105,7 @@ class LocalSolver:
         for g in np.unique(core["group"]):
             idx = np.flatnonzero(loc["group"] == g)
             b = loc[idx]
-            R = build_R(b["x"], b["y"], b["sigma"], c, alpha)
+            R = build_R(b["x"], b["y"], b["sigma"], c, alpha, geometry=geometry)
             self.blocks.append((idx, int(np.count_nonzero(idx < self.ncore)), R,
                                 cho_factor(R, lower=True)))
 
