@@ -304,6 +304,62 @@ The Met-8 groups are modelled on the same disc as Met-11 (sub-satellite longitud
 - **A global equal-area partition fits SEVIRI poorly.** Only 19 of 48, 55 of 192 and 165 of 768 patches hold data. Among those, the core sizes vary with a CV of 0.6–0.7, and edge and cloud-gap patches have tiny cores with large halo/core ratios. Density-balanced patches are the subject of Phase A step 5b.
 - The setup time at 768 patches (93 s) is an artefact of the toy's sphere push, which tests every record against every patch (see `SphereDecomposition.candidate_ranks`).
 
+### 2.10 Equal-area bands against density-balanced patches (added 2026-11-04)
+
+`Config(partition="bisection", criterion="obs")`: `BisectionDecomposition` splits the observations by recursive coordinate bisection in 3-D, along the axis of largest extent, near the count quantile. Any number of patches is possible.
+
+**Ties.** Ownership is a function of position only, so a cut cannot separate points with equal coordinates. Two rules handle this:
+- the coordinates are first given a fixed, generic rotation, so that regular grids do not tie on the cut axes;
+- each cut is moved to the nearest boundary between distinct values.
+
+Without co-located records every patch then gets the same number of observations (±1; tested on a 40 × 40 latitude–longitude grid). Co-located records (e.g. the channels of one pixel) always share a patch; the balance is then limited by the number of distinct positions (tested).
+
+**Other properties.**
+- The partition depends only on the data, not on the number of tasks, so it is compatible with the reproducible mode (tested bit-identical for 1, 3, 5 and 12 tasks).
+- Patches are irregular, so the halo is "within h of a core observation" (`obs`). The push uses a bounding cap per patch, a superset (tested directly and against brute force).
+- In the toy the partition is built at once from all observations that are routed; an MPI code would use a parallel bisection.
+
+**Setup.** Realistic SEVIRI layout (§2.9), ℓ = 60 km (provisional), α = 0.8, symmetrised, one patch per task. Script: `experiments/partitions.py`; raw output: `experiments/partitions.out`.
+- Load imbalance is max/mean over **all** patches, since a patch without data is an idle task: n³ is the setup cost, n² the cost per application.
+- The one-image runs use 5 300 pixels at the calibrated spacing; accuracy depends on the local density only (§2.9). The patch counts with data therefore differ from §2.9's 11 000-pixel image.
+
+**One image** (`bands/obs` rows and h = 4ℓ in the `.out` file):
+
+| patches | partition | h/ℓ | rel. L2 error | with data | max/mean core | max/mean n³ | largest local n | sum of local R | bytes / apply | messages / apply |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 48 | bands/rect | 1 | 3.8e-3 | 17 | 7.7 | 19.1 | 903 | 23 MB | 90 kB | 1 538 |
+| 48 | bands/rect | **2** | **4.5e-4** | 17 | 7.7 | 18.8 | **951** | 26 MB | 96 kB | 1 540 |
+| 48 | bisection | 2 | 2.6e-3 | 48 | 1.0 | 2.0 | 194 | 9 MB | 116 kB | 4 444 |
+| 48 | bisection | **3** | **2.3e-4** | 48 | 1.0 | 2.4 | **256** | 14 MB | 142 kB | 4 460 |
+| 192 | bands/rect | 1 | 6.8e-3 | 46 | 17.5 | 52.8 | 535 | 13 MB | 98 kB | 6 526 |
+| 192 | bands/rect | **2** | **6.4e-4** | 46 | 17.5 | 47.9 | **572** | 16 MB | 111 kB | 6 564 |
+| 192 | bisection | 2 | 4.3e-3 | 192 | 1.0 | 2.0 | 68 | 4 MB | 163 kB | 11 646 |
+| 192 | bisection | **3** | **4.2e-4** | 192 | 1.0 | 2.2 | **100** | 9 MB | 232 kB | 11 834 |
+
+**Two discs** (Meteosat-11 + Meteosat-8, channel 5: 19 584 pixels in 2 groups, as in one CCMA slot), cost only, at the equal-accuracy pair (bands/rect 2ℓ, bisection 3ℓ). The same-halo rows (4ℓ) are in the `.out` file.
+
+| patches | partition | h/ℓ | with data | max/mean core | max/mean n³ | largest local n | sum of local R | bytes / apply | messages / apply |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 48 | bands/rect | 2 | 27 | 5.4 | 10.2 | 2 481 | 152 MB | 355 kB | 2 410 |
+| 48 | bisection | 3 | 48 | 1.0 | 2.1 | 691 | 95 MB | 450 kB | 4 984 |
+| 192 | bands/rect | 2 | 77 | 7.1 | 14.3 | 940 | 76 MB | 413 kB | 18 160 |
+| 192 | bisection | 3 | 192 | 1.0 | 3.3 | 292 | 49 MB | 630 kB | 32 456 |
+
+- **Equal-area bands leave most patches idle.** For SEVIRI they are badly imbalanced: only 17 of 48 or 46 of 192 patches hold data in one image, the busiest patch has 8–18× the mean core, and 18–53× the mean setup cost.
+- **Bisection balances the load almost perfectly:** cores are equal; setup cost max/mean is 2–3 (up to 4 with two discs) and application cost about 2. The remaining spread is the halo.
+- **At the same halo width, bisection is 4–7× less accurate** than bands/rect (h = 2–4ℓ; 10× at 1ℓ).
+  - A measured cause: its `obs` halo is narrower than the geometric `rect` halo. On the same band patches, `obs` alone costs 2–3× in error at 2–4ℓ.
+  - A likely further cause, not isolated here: all bisection patches lie on the data, so many more patch boundaries cross observations.
+- **One ℓ more halo restores the accuracy.** For a 1e-3 gate (ℓ = 60 km), bands need 2ℓ (1ℓ fails: 3.8e-3 and 6.8e-3) and bisection 3ℓ (2.3e-4 and 4.2e-4).
+- **At equal accuracy, bisection is far cheaper on the critical path**, the busiest task:
+  - one image: the largest local system is 256 against 951 (48 patches), about 51× less n³; and 100 against 572 (192 patches), about 190× less;
+  - two discs: 691 against 2 481 (about 46×) and 292 against 940 (about 33×);
+  - total local memory is also lower: 14 against 26 MB, 9 against 16 MB, 95 against 152 MB, 49 against 76 MB.
+- **The price is communication.** Bytes per application are 1.3–2.1× higher and messages 1.8–2.9× higher, because every patch has neighbours with data. The values are small (8 bytes each), so the main risk is message latency at large task counts. The task-level halo map of §2.8 and neighbour collectives mitigate it.
+- **Recommendation for the library (plan D11):** density-balanced patches, by recursive bisection with tie-aware cuts so that co-located records stay together. The partition is deterministic given the data, so the reproducible mode works. The halo should be about one ℓ wider than geometric cells would need.
+  - With many groups in a window, build the partition once from all of them (or per time slot), so that the total work per patch is balanced. This prototype builds it per run.
+  - Caveat: accuracy was measured on one mock SEVIRI layout with one group; the two-disc runs are cost only.
+
 ## 3. Status against the acceptance gates (slide 8)
 
 | Gate | Status |

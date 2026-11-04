@@ -552,3 +552,111 @@ def test_geo_disc_exact_cases():
     assert run(cfg, h=13000.0).metrics["rel_l2"] < 1e-12
     m = run(cfg, h=600.0, px=8, py=6).metrics
     assert m["residual_distributed"] == pytest.approx(m["residual_global"], rel=1e-10)
+
+
+# ---- density-balanced patches (recursive coordinate bisection) ------------------------
+
+from r_matrix import BisectionDecomposition  # noqa: E402
+
+
+@pytest.mark.parametrize("pattern, P", [("uniform", 12), ("clustered", 7), ("geo_disc", 48)])
+def test_bisection_balances_counts(pattern, P):
+    obs = np.concatenate(make_obs(2000, None, 1, seed=2, pattern=pattern, geometry="sphere"))
+    dec = BisectionDecomposition.from_points(obs["x"], obs["y"], obs["global_id"], P)
+    counts = np.bincount(dec.owner(obs["x"], obs["y"]), minlength=P)
+    assert dec.size == P and counts.max() - counts.min() <= 1
+    # Deterministic and independent of input order.
+    perm = np.random.default_rng(0).permutation(len(obs))
+    dec2 = BisectionDecomposition.from_points(obs["x"][perm], obs["y"][perm], obs["global_id"][perm], P)
+    np.testing.assert_array_equal(dec2.owner(obs["x"], obs["y"]), dec.owner(obs["x"], obs["y"]))
+
+
+def test_bisection_halo_matches_brute_force():
+    obs = make_obs(1500, None, 12, seed=3, pattern="clustered", geometry="sphere")
+    allobs = np.concatenate(obs)
+    dec = BisectionDecomposition.from_points(allobs["x"], allobs["y"], allobs["global_id"], 12)
+    comm = MockComm(12)
+    owned, _, _ = redistribute(comm, dec, obs)
+    h = 800.0
+    halos, _, _ = discover_halos(comm, dec, owned, h, "obs", "kdtree")
+    for r in range(12):
+        others = np.concatenate([o for s, o in enumerate(owned) if s != r])
+        if len(owned[r]) == 0:
+            assert len(halos[r]) == 0
+            continue
+        a = points(others["x"], others["y"], "sphere")
+        b = points(owned[r]["x"], owned[r]["y"], "sphere")
+        keep = cKDTree(b).query(a)[0] <= h
+        np.testing.assert_array_equal(np.sort(halos[r]["global_id"]), np.sort(others["global_id"][keep]))
+
+
+def test_bisection_exact_and_reproducible():
+    cfg = Config(geometry="sphere", pattern="clustered", n_obs=600, c=300.0, h=600.0,
+                 partition="bisection", criterion="obs", symmetric=True, px=12, py=1)
+    m = run(cfg).metrics
+    assert m["residual_distributed"] == pytest.approx(m["residual_global"], rel=1e-10)
+    assert run(cfg, h=13000.0).metrics["rel_l2"] < 1e-12
+    g0, z0 = _z_by_gid(run(cfg, n_tasks=1))
+    for T in (3, 5, 12):
+        g, z = _z_by_gid(run(cfg, n_tasks=T, patch_map="round_robin"))
+        assert np.array_equal(g, g0) and np.array_equal(z, z0)
+
+
+def test_bisection_rejects_bad_settings():
+    with pytest.raises(ValueError, match="bisection"):
+        run(SPH, partition="bisection")                       # criterion "rect"
+    with pytest.raises(ValueError, match="bisection"):
+        run(SMALL, partition="bisection", criterion="obs")    # plane
+    with pytest.raises(ValueError, match="partition"):
+        run(SMALL, partition="voronoi")
+
+
+def test_bisection_ties_grid_and_colocated():
+    g = np.radians(np.linspace(-60, 60, 40))
+    lon, lat = (a.ravel() for a in np.meshgrid(g, g))     # rows share sin(lat): ties
+    dec = BisectionDecomposition.from_points(lon, lat, np.arange(lon.size), 48)
+    counts = np.bincount(dec.owner(lon, lat), minlength=48)
+    assert counts.max() - counts.min() <= 1
+    rng = np.random.default_rng(0)                         # 50 pixels x 20 channels
+    lo, la = np.repeat(rng.uniform(-1, 1, 50), 20), np.repeat(rng.uniform(-1, 1, 50), 20)
+    own = BisectionDecomposition.from_points(lo, la, np.arange(1000), 48).owner(lo, la)
+    assert all(np.unique(own[k * 20:(k + 1) * 20]).size == 1 for k in range(50))   # stay together
+    counts = np.bincount(own, minlength=48)
+    assert np.all(counts % 20 == 0) and counts.max() <= 40   # optimal for 50 positions / 48 patches
+
+
+def test_bisection_push_is_superset_of_obs_halo():
+    obs = np.concatenate(make_obs(1200, None, 1, seed=4, pattern="clustered", geometry="sphere"))
+    dec = BisectionDecomposition.from_points(obs["x"], obs["y"], obs["global_id"], 10)
+    own = dec.owner(obs["x"], obs["y"])
+    p = points(obs["x"], obs["y"], "sphere")
+    h = 700.0
+    for d in range(10):
+        core = p[own == d]
+        if len(core) == 0:
+            continue
+        need = (cKDTree(core).query(p)[0] <= h) & (own != d)
+        assert np.all(dec.push_mask(d, obs["x"], obs["y"], h)[need])
+        for s in np.unique(own[need]):
+            assert d in dec.candidate_ranks(s, h)
+
+
+@pytest.mark.parametrize("overrides", [dict(n_obs=30, px=48, py=1),           # fewer obs than patches
+                                       dict(n_groups=3, group_layout="colocated"),
+                                       dict(skew=0.5)])
+def test_bisection_pipeline_cases(overrides):
+    cfg = Config(geometry="sphere", pattern="clustered", n_obs=600, c=300.0, h=600.0,
+                 partition="bisection", criterion="obs", symmetric=True, px=12, py=1)
+    m = run(cfg, **overrides).metrics
+    assert m["residual_distributed"] == pytest.approx(m["residual_global"], rel=1e-10)
+
+
+def test_bisection_with_rejected_observations():
+    cfg = Config(geometry="sphere", pattern="clustered", n_obs=600, c=300.0, h=600.0,
+                 partition="bisection", criterion="obs", symmetric=True, px=12, py=1)
+    obs = make_obs(600, None, 12, seed=0, pattern="clustered", geometry="sphere")
+    obs[0]["y"][:3] = np.nan                                # rejected before the build
+    obs[1]["sigma"][:2] = -1.0
+    res = run(cfg, obs_init=obs)
+    assert res.metrics["n_rejected"] == 5
+    assert res.metrics["residual_distributed"] == pytest.approx(res.metrics["residual_global"], rel=1e-10)

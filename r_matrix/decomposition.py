@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .geometry import angle_to_chord, points, wrap_lon
+from .geometry import EARTH_RADIUS, angle_to_chord, points, wrap_lon
 
 
 @dataclass(frozen=True)
@@ -232,3 +232,141 @@ class SphereDecomposition:
     def push_mask(self, dest, x, y, h):
         """Points within h of dest's cell (exact)."""
         return self.rect_distance(dest, x, y) <= h
+
+
+# A fixed, generic rotation of the 3-D coordinates used for the bisection cuts (see
+# BisectionDecomposition). Any rotation works; this one avoids axis-aligned grids.
+_RCB_ROTATION = np.linalg.qr(np.array([[0.83, -0.31, 0.47],
+                                       [0.29, 0.91, 0.19],
+                                       [-0.48, 0.07, 0.86]]))[0]
+
+
+class BisectionDecomposition:
+    """Density-balanced patches on the sphere by recursive coordinate bisection (RCB).
+
+    Built from the observations themselves (``from_points``): the 3-D points are split
+    recursively, along the coordinate axis of largest extent, near the count quantile
+    that gives the two halves patch counts in proportion (k // 2 and k - k // 2). Any
+    number of patches is possible.
+
+    Ownership is a function of position only (``owner`` descends the tree), so a cut can
+    never separate two points with the same coordinate. Two rules keep the build and
+    ``owner`` consistent and the counts balanced:
+    * the coordinates are first rotated by a fixed, generic rotation (_RCB_ROTATION), so
+      that regular grids (e.g. rows of equal latitude) do not produce ties on the cut
+      axes; only co-located records can then tie;
+    * each cut is moved to the nearest boundary between distinct coordinate values.
+    Without co-located records every patch then holds the same number of observations
+    (+-1). Co-located records (e.g. the channels of one pixel) always share a patch; the
+    balance is then limited by the number of distinct positions.
+
+    The partition depends only on the data, not on the number of tasks, so it is
+    compatible with the reproducible mode.
+
+    In this prototype the partition is built from all observations at once, which an
+    MPI code would replace by a parallel bisection (or a partition of a sample).
+
+    Patches are irregular, so there is no exact point-to-patch distance: use the halo
+    criterion "obs" (within h of any core observation). push_mask uses a bounding cap
+    per patch (centre and angular radius of its points), which is a superset of that
+    halo ONLY for the observations the partition was built from: owner() routes any
+    point, but a point outside its patch's cap could be missed by other patches' halos.
+    The pipeline builds the partition from exactly the observations it routes.
+    """
+    geometry = "sphere"
+    domain = Domain(-np.inf, np.inf, -np.pi / 2, np.pi / 2)
+
+    def __init__(self, axes, cuts, children, leaf_of, centres, radii):
+        self._axes, self._cuts, self._children, self._leaf = axes, cuts, children, leaf_of
+        self.centres, self.radii = centres, radii
+        self.size = len(centres)
+
+    @classmethod
+    def from_points(cls, x, y, gid, n_patches):
+        """Partition the points (lon x, lat y in radians; unique gid) into n_patches."""
+        p = points(x, y, "sphere")
+        s = p @ _RCB_ROTATION.T                         # split coordinates
+        axes, cuts, children, leaf_of = [], [], [], []
+        next_leaf = [0]
+
+        def build(idx, k):
+            node = len(axes)
+            axes.append(-1); cuts.append(0.0); children.append((-1, -1)); leaf_of.append(-1)
+            if k == 1 or len(idx) == 0:
+                leaf = next_leaf[0]
+                next_leaf[0] += k                      # empty subtrees still use k patch numbers
+                leaf_of[node] = leaf
+                return node
+            ext = s[idx].max(axis=0) - s[idx].min(axis=0)
+            a = int(np.argmax(ext))
+            order = idx[np.lexsort((gid[idx], s[idx, a]))]
+            v = s[order, a]
+            k1 = k // 2
+            target = len(order) * k1 / k
+            bounds = np.flatnonzero(v[1:] > v[:-1]) + 1  # cut positions between distinct values
+            if bounds.size == 0:                         # all co-located: cannot split
+                m = len(order)
+                cut = np.inf
+            else:
+                m = int(bounds[np.argmin(np.abs(bounds - target))])
+                cut = 0.5 * (v[m - 1] + v[m])
+                if not v[m - 1] < cut <= v[m]:           # midpoint rounded onto v[m-1]
+                    cut = v[m]
+            axes[node], cuts[node] = a, cut
+            left = build(order[:m], k1)
+            right = build(order[m:], k - k1)
+            children[node] = (left, right)
+            return node
+
+        build(np.arange(len(p)), n_patches)
+        centres, radii = np.zeros((n_patches, 3)), np.zeros(n_patches)
+        dec = cls(np.array(axes), np.array(cuts), children, np.array(leaf_of), centres, radii)
+        own = dec.owner(x, y)
+        for r in range(n_patches):
+            q = p[own == r] / EARTH_RADIUS
+            if len(q):
+                c = q.sum(axis=0)
+                c = c / np.linalg.norm(c) if np.linalg.norm(c) > 0 else q[0]
+                centres[r] = c
+                radii[r] = np.arccos(np.clip(q @ c, -1, 1)).max() + 1e-9
+            else:
+                centres[r], radii[r] = np.array([1.0, 0.0, 0.0]), -np.inf   # empty patch
+        return dec
+
+    def points(self, x, y):
+        return points(x, y, "sphere")
+
+    def owner(self, x, y):
+        """Patch of each point: descend the bisection tree."""
+        p = points(x, y, "sphere") @ _RCB_ROTATION.T
+        out = np.empty(len(p), dtype=np.int64)
+        stack = [(0, np.arange(len(p)))]
+        while stack:
+            node, idx = stack.pop()
+            if self._axes[node] < 0:
+                out[idx] = self._leaf[node]
+                continue
+            go_left = p[idx, self._axes[node]] < self._cuts[node]
+            left, right = self._children[node]
+            stack.append((left, idx[go_left]))
+            stack.append((right, idx[~go_left]))
+        return out
+
+    def rect_distance(self, rank, x, y):
+        raise NotImplementedError("irregular patches: use the halo criterion 'obs'")
+
+    def candidate_ranks(self, rank, h):
+        """Ranks whose cap is within h of this rank's cap."""
+        if not np.isfinite(self.radii[rank]):
+            return np.zeros(0, dtype=np.int64)
+        theta_h = 2.0 * np.arcsin(min(h / (2.0 * EARTH_RADIUS), 1.0))
+        ang = np.arccos(np.clip(self.centres @ self.centres[rank], -1, 1))
+        return np.flatnonzero(ang <= self.radii[rank] + self.radii + theta_h)
+
+    def push_mask(self, dest, x, y, h):
+        """Points within the cap of dest expanded by h: a superset of dest's obs halo."""
+        if not np.isfinite(self.radii[dest]):
+            return np.zeros(np.shape(x), dtype=bool)
+        theta_h = 2.0 * np.arcsin(min(h / (2.0 * EARTH_RADIUS), 1.0))
+        q = points(x, y, "sphere") / EARTH_RADIUS
+        return np.arccos(np.clip(q @ self.centres[dest], -1, 1)) <= self.radii[dest] + theta_h

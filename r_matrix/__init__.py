@@ -8,8 +8,8 @@ See README.md in this directory for the design and the results. Quick start::
     z, _ = res.apply_Rinv(d_orig)     # apply R^-1 to any vector on the original ranks
 """
 from .comm import MockComm
-from .decomposition import Decomposition, Domain, SphereDecomposition
+from .decomposition import BisectionDecomposition, Decomposition, Domain, SphereDecomposition
 from .pipeline import Config, RunResult, run, sweep
 
-__all__ = ["Config", "Decomposition", "Domain", "MockComm", "RunResult", "SphereDecomposition",
-           "run", "sweep"]
+__all__ = ["BisectionDecomposition", "Config", "Decomposition", "Domain", "MockComm", "RunResult",
+           "SphereDecomposition", "run", "sweep"]

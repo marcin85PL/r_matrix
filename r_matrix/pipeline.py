@@ -33,11 +33,12 @@ from scipy.linalg import cho_solve
 from .comm import MockComm
 from .commmap import build_comm_maps, halo_exchange, halo_exchange_adjoint
 from .covariance import LocalSolver
-from .decomposition import Decomposition, Domain, SphereDecomposition
+from .decomposition import BisectionDecomposition, Decomposition, Domain, SphereDecomposition
 from .diagnostics import error_metrics, halo_summary, load_balance
 from .generate import make_obs
 from .geometry import GEOMETRIES
 from .halo import discover_halos
+from .records import valid_mask
 from .redistribute import check_redistribution, redistribute
 from .reference import global_solve
 
@@ -69,6 +70,12 @@ class Config:
         per patch, and patches are assigned to tasks by "block" (contiguous ranges)
         or "round_robin". Results depend only on the patch layout, not on n_tasks.
         Communication is counted between tasks.
+    partition : how the R-patches are made (P = px * py patches either way)
+        "bands"      regular cells: Decomposition (plane) or equal-area
+                     SphereDecomposition (sphere)
+        "bisection"  density-balanced patches by recursive coordinate bisection of the
+                     observations (BisectionDecomposition; sphere only, needs
+                     criterion="obs")
     geometry : "plane" (domain, Euclidean) or "sphere" (lon, lat in radians, chord
         distance in km on the Earth sphere; domain is ignored and px x py is the
         equal-area SphereDecomposition; c and h are then in km)
@@ -93,6 +100,7 @@ class Config:
     symmetric: bool = False
     n_tasks: Optional[int] = None
     patch_map: str = "block"
+    partition: str = "bands"
     geometry: str = "plane"
     reference: bool = True
 
@@ -272,6 +280,10 @@ def run(cfg=Config(), obs_init=None, **overrides):
         decomp = Decomposition(cfg.domain, cfg.px, cfg.py)
     P = decomp.size
     T = P if cfg.n_tasks is None else cfg.n_tasks
+    if cfg.partition not in ("bands", "bisection"):
+        raise ValueError(f"unknown partition {cfg.partition!r}")
+    if cfg.partition == "bisection" and (cfg.geometry != "sphere" or cfg.criterion != "obs"):
+        raise ValueError('partition="bisection" needs geometry="sphere" and criterion="obs"')
     if cfg.n_tasks is None:
         task_of, home = np.arange(P), np.arange(P)
     else:
@@ -290,6 +302,12 @@ def run(cfg=Config(), obs_init=None, **overrides):
     t0 = time.perf_counter()
     if len(obs_init) != T:
         raise ValueError(f"obs_init has {len(obs_init)} task arrays, expected {T}")
+    if cfg.partition == "bisection":
+        # Built from exactly the observations that will be routed (all valid ones), at
+        # once; an MPI code would use a parallel bisection.
+        allobs = np.concatenate(obs_init)
+        allobs = allobs[valid_mask(allobs, BisectionDecomposition.domain)]
+        decomp = BisectionDecomposition.from_points(allobs["x"], allobs["y"], allobs["global_id"], P)
     obs_patch = _to_patches(obs_init, home, P)
     owned, rejected, plan = redistribute(comm, decomp, obs_patch)
     t["setup_redistribute"] = time.perf_counter() - t0
