@@ -25,12 +25,13 @@ geostationary
 """
 import numpy as np
 from scipy.linalg import cholesky
+from scipy.spatial import cKDTree
 
 from .covariance import build_R
 from .records import empty
 
 PATTERNS = ("uniform", "clustered", "coincident", "boundary", "geostationary")
-PATTERNS_SPHERE = ("uniform", "clustered", "poles_dateline")
+PATTERNS_SPHERE = ("uniform", "clustered", "poles_dateline", "geo_disc")  # geo_disc: see _geo_disc
 
 
 def geostationary_shape(n, domain):
@@ -86,6 +87,16 @@ def _positions_sphere(n, pattern, rng, frac=0.2, n_clusters=6):
 
     uniform         uniform in area (lon uniform, sin(lat) uniform)
     clustered       80 % in n_clusters tight blobs (width about 0.03 rad), 20 % uniform
+    geo_disc        a geostationary imager after thinning, modelled on SEVIRI clear-sky
+                    radiances in an IFS CCMA: a near-uniform lattice (Fibonacci, jittered)
+                    over the disc within 66 deg of the sub-satellite point (lon 0), from
+                    which cloudy pixels are removed by thresholding a smooth random field
+                    (cloud systems of about 500 km). The lattice spacing is fixed and
+                    calibrated on the 2022060100 CCMA of experiment jdfp: nearest-
+                    neighbour distances 43 / 56 / 67 km (10th / 50th / 90th percentile)
+                    for 11000 pixels; the CCMA has 49 / 55 / 79 km, and the same median
+                    (54-55 km) for every channel. n is the number of clear pixels (at
+                    most n) and sets the clear fraction (0.35 for 11000).
     poles_dateline  stresses the special places: of the 20 % special points, a quarter
                     lie exactly on lon = +pi, a quarter exactly on lon = -pi, a quarter
                     within 0.03 rad of a pole (some exactly on it), and a quarter have
@@ -114,6 +125,52 @@ def _positions_sphere(n, pattern, rng, frac=0.2, n_clusters=6):
             lat[2 * q:2 * q + k] = sign[:k] * np.pi / 2
             lon[3 * q:4 * q] += 2.0 * np.pi
     return lon, lat
+
+
+SEVIRI_SPACING_N = 11000 / 0.35   # lattice points in the disc, see _geo_disc
+
+
+def _geo_disc(n, rng, sub_lon=0.0, max_angle=np.radians(66.0), cloud_km=500.0):
+    """Clear pixels of one geostationary image (see _positions_sphere, pattern geo_disc).
+
+    The lattice is fixed: about SEVIRI_SPACING_N points in the disc, which after jitter
+    gives nearest-neighbour distances with a median of about 56 km. In the CCMA every
+    SEVIRI channel has a median spacing of 54-55 km; channels with fewer active pixels
+    are not sparser, they have more of the disc masked. So n sets the clear fraction,
+    n / (lattice points in the disc), not the spacing.
+    """
+    cap = (1.0 - np.cos(max_angle)) / 2.0                 # disc area / sphere area
+    n_lattice = int(round(SEVIRI_SPACING_N / cap))        # lattice points over the whole sphere
+    k = np.arange(n_lattice) + 0.5
+    z = 1.0 - 2.0 * k / n_lattice
+    phi = np.pi * (1.0 + np.sqrt(5.0)) * k                # golden-angle spiral
+    v = np.column_stack([np.sqrt(1 - z**2) * np.cos(phi), np.sqrt(1 - z**2) * np.sin(phi), z])
+    centre = np.array([np.cos(sub_lon), np.sin(sub_lon), 0.0])
+    v = v[v @ centre >= np.cos(max_angle)]
+    spacing = np.sqrt(4.0 * np.pi / n_lattice)           # radians, about the lattice step
+    v = v + 0.15 * spacing * rng.standard_normal(v.shape)  # navigation / box-centre jitter
+    v /= np.linalg.norm(v, axis=1, keepdims=True)
+    if n <= 0:
+        return np.zeros(0), np.zeros(0)
+    # Cloud field: a sum of Gaussian bumps of width w = cloud_km, about 4 per w^2 of
+    # area, with centres uniform over the sphere. Each bump is evaluated only within 5 w
+    # of its centre (k-d tree); beyond that it is below 4e-6 of its peak.
+    w = cloud_km / 6371.0
+    m = max(int(4 * 4.0 * np.pi / w**2), 1)
+    c = rng.standard_normal((m, 3))
+    c /= np.linalg.norm(c, axis=1, keepdims=True)
+    amp = rng.standard_normal(m)
+    field = np.zeros(len(v))
+    tree = cKDTree(v)
+    for j, hits in enumerate(tree.query_ball_point(c, r=5.0 * w)):
+        if hits:
+            d2 = np.sum((v[hits] - c[j]) ** 2, axis=1)    # squared chord on the unit sphere
+            field[hits] += amp[j] * np.exp(-d2 / (2 * w**2))
+    clear = min(1.0, n / len(v))
+    keep = field <= np.quantile(field, clear)
+    v = v[keep]
+    v = v[rng.permutation(len(v))][:n]                    # shuffle; at most n
+    return np.arctan2(v[:, 1], v[:, 0]), np.arcsin(np.clip(v[:, 2], -1, 1))
 
 
 def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
@@ -169,13 +226,18 @@ def make_obs(n, domain, nranks, seed=0, pattern="uniform", decomposition=None,
     grid = geostationary_shape(n_pos, domain) if pattern == "geostationary" and not sphere else None
     if grid is not None:
         n_pos = grid[0] * grid[1]
+    disc = sphere and pattern == "geo_disc"
+    if disc:                           # the disc decides its own count (at most n_pos)
+        x, y = _geo_disc(n_pos, rng)
+        n_pos = len(x)
     n = n_pos * n_groups if colocated else n_pos
     obs = empty(n)
     obs["global_id"] = 1000 + 7 * rng.permutation(n).astype(np.int64)
-    if sphere:
-        x, y = _positions_sphere(n_pos, pattern, rng)
-    else:
-        x, y = _positions(n_pos, domain, pattern, rng, decomposition, grid=grid)
+    if not disc:
+        if sphere:
+            x, y = _positions_sphere(n_pos, pattern, rng)
+        else:
+            x, y = _positions(n_pos, domain, pattern, rng, decomposition, grid=grid)
     if colocated:
         x, y = np.repeat(x, n_groups), np.repeat(y, n_groups)
         obs["group"] = np.tile(np.arange(n_groups), n_pos)

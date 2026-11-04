@@ -31,7 +31,7 @@ r_matrix/                          the repository
 git clone https://github.com/marcin85PL/r_matrix.git && cd r_matrix
 python3 -m venv .venv && source .venv/bin/activate      # tested with Python 3.14
 pip install -e ".[all]"                                 # editable install, plus test and notebook extras
-python -m pytest -q                                     # expect: 77 passed in a few seconds
+python -m pytest -q                                     # expect: 80 passed in about 20 s
 python -m ipykernel install --user --name r_matrix     # makes the venv available to Jupyter
 ```
 
@@ -166,7 +166,7 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 
 ### Tests
 
-`tests/test_r_matrix.py` has 77 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
+`tests/test_r_matrix.py` has 80 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
 - with one task (P = 1) the result equals the global solve;
 - with a halo covering the whole domain, the result equals the global solve exactly;
 - the error decreases as h grows;
@@ -226,7 +226,7 @@ r_matrix/              the repository
     RESULTS.md         findings (dated; regenerate with notebooks/02_experiments.ipynb)
     __init__.py        public API: Config, run, sweep, RunResult, MockComm, Domain, Decomposition, SphereDecomposition
     records.py         OBS_DTYPE (incl. correlation group), input screening, ID uniqueness
-    generate.py        seeded mock observations (5 plane patterns, 3 sphere patterns), groups, random initial tasks
+    generate.py        seeded mock observations (5 plane patterns, 4 sphere patterns incl. a SEVIRI-like disc), groups, random initial tasks
     geometry.py        plane / sphere coordinates, chord distance, longitude wrapping
     decomposition.py   Domain, Px × Py Decomposition, equal-area SphereDecomposition, owner(), cell geometry
     comm.py            MockComm (alltoall / alltoallv / neighbour exchange) + CommStats, per-task accounting
@@ -237,11 +237,12 @@ r_matrix/              the repository
     reference.py       global exact solve
     diagnostics.py     error metrics, load balance, halo summary
     pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep(), local_solves (plain or symmetrised), patch_task_map
-  tests/test_r_matrix.py           77 pytest tests
+  tests/test_r_matrix.py           80 pytest tests
   experiments/symmetric_operator.py  symmetrised operator: symmetry, definiteness, accuracy, cost (RESULTS §2.5)
   experiments/groups.py              correlation groups: equivalence, cost (RESULTS §2.6)
   experiments/sphere.py              the sphere: accuracy and cost against the plane (RESULTS §2.7)
   experiments/patches.py             R-patches separate from tasks: reproducible vs relaxed mode (RESULTS §2.8)
+  experiments/seviri.py              realistic SEVIRI images: accuracy, sensitivity to l, cost per window (RESULTS §2.9)
   notebooks/01_walkthrough.ipynb   toy problem, step by step
   notebooks/02_experiments.ipynb   full experiments (sections 1–6)
 ```

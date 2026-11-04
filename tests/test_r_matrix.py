@@ -529,3 +529,26 @@ def test_sweep_flattens_task_metrics():
     from r_matrix import sweep
     rows = sweep("h", [1.0], Config(n_obs=300, n_tasks=4))
     assert rows[0]["owned_task_mean"] == pytest.approx(75.0) and rows[0]["owned_mean"] == pytest.approx(25.0)
+
+
+# ---- SEVIRI-like disc -------------------------------------------------------------------
+
+@pytest.mark.parametrize("n, seed", [(11000, 0), (5300, 1)])
+def test_geo_disc_layout(n, seed):
+    # Every channel has the same spacing in the CCMA; n only sets the clear fraction.
+    obs = np.concatenate(make_obs(n, None, 4, seed=seed, pattern="geo_disc", geometry="sphere"))
+    assert 0.95 * n <= len(obs) <= n
+    centre = points(np.array([0.0]), np.array([0.0]), "sphere")[0] / EARTH_RADIUS
+    p = points(obs["x"], obs["y"], "sphere")
+    angle = np.degrees(np.arccos(np.clip(p @ centre / EARTH_RADIUS, -1, 1)))
+    assert angle.max() <= 66.0 + 1.0                  # within the disc (+ jitter)
+    nn = cKDTree(p).query(p, k=2)[0][:, 1]
+    assert 50.0 <= np.median(nn) <= 62.0              # calibrated on the CCMA (55 km)
+    assert len(np.unique(obs["global_id"])) == len(obs)
+
+
+def test_geo_disc_exact_cases():
+    cfg = Config(geometry="sphere", pattern="geo_disc", n_obs=600, c=300.0, symmetric=True)
+    assert run(cfg, h=13000.0).metrics["rel_l2"] < 1e-12
+    m = run(cfg, h=600.0, px=8, py=6).metrics
+    assert m["residual_distributed"] == pytest.approx(m["residual_global"], rel=1e-10)

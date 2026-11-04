@@ -241,6 +241,69 @@ Bytes count every patch-to-patch transfer between different tasks. Messages are 
   - choose the fixed patch count for the largest task count that will be used, accepting the overhead at smaller counts;
   - or offer the relaxed mode when reproducibility is not required.
 
+### 2.9 Realistic SEVIRI images (added 2026-11-04)
+
+Sphere pattern `geo_disc`. It is a jittered near-uniform lattice within 66° of the sub-satellite point, with cloud gaps from a smooth random field (systems of about 500 km). It is calibrated on SEVIRI clear-sky radiances in a real IFS CCMA (experiment jdfp, 2022060100; plan repository, `plan/ifs_deep_dive/05_seviri_ccma_quicklook.md`):
+- **Every channel has the same pixel spacing** in the CCMA (median nearest-neighbour distance 54–55 km). Channels with fewer active pixels have more of the disc masked, not wider spacing. So the lattice is fixed, and the number of pixels sets the clear fraction. The generator gives 43 / 56 / 67 km (10th / 50th / 90th percentile) for any image size; the CCMA has 49 / 55 / 79 km.
+- **Active pixels per hourly image:** Meteosat-11 ch 5 / 6 / 9 = 10 680 / 5 297 / 991; Meteosat-8 ch 5 / 6 = 8 904 / 4 939. With 12 images, that is 60 groups and about 370 000 data per 12-hour window.
+
+**The error parameters are provisional:** ℓ = c = 60 km and α ∈ {0.5, 0.8}, from a rough look at first-guess departure correlations (0.56 below 50 km, 0.3 at 50–100 km, about 0 beyond 150 km, water-vapour channels). Part C brackets ℓ up to 150 km.
+
+Script: `experiments/seviri.py`; raw output: `experiments/seviri.out`. Symmetrised operator, global equal-area patches. Errors are the median (and range) over three seeds, which vary the cloud pattern, the jitter and the departures.
+
+**A. Accuracy, channel-6-sized image** (5 300 pixels, 192 patches):
+
+| α | h/ℓ = 2 | 3 | 4 | 5 | 6 |
+|---:|---:|---:|---:|---:|---:|
+| 0.5 | 1.8e-4 | 1.4e-5 | 7.2e-7 | 4.8e-8 | 3.8e-9 |
+| 0.8 | 6.7e-4 (6.4–8.2e-4) | 7.6e-5 | 6.8e-6 | 8.0e-7 | 9.1e-8 |
+
+**C. Sensitivity to ℓ and image size** (α = 0.8, 192 patches; median, range over three seeds):
+
+| pixels | ℓ (km) | h/ℓ = 2 | 3 | 4 | largest local n at 4ℓ |
+|---:|---:|---:|---:|---:|---:|
+| 11 000 (ch 5) | 60 | 7.8e-4 (6.6–8.0e-4) | 8.1e-5 | 9.1e-6 | 864 |
+| 5 300 (ch 6) | 100 | 4.7e-3 | 8.7e-4 (8.5–9.2e-4) | 1.6e-4 | 781 |
+| 11 000 (ch 5) | 100 | 4.8e-3 | 9.0e-4 (8.9–9.5e-4) | 1.7e-4 | 1 107 |
+| 5 300 (ch 6) | 150 | 6.0e-3 | 1.2e-3 (1.1–1.2e-3) | 2.6e-4 | 965 |
+| 11 000 (ch 5) | 150 | 6.1e-3 | 1.3e-3 (1.3–1.3e-3) | 2.9e-4 (2.9–2.9e-4) | 1 410 |
+
+**B. Cost of one channel-5-sized image** (11 000 pixels, α = 0.8, h = 4ℓ = 240 km):
+
+| patches | with data | CV of core sizes (patches with data) | largest local n | largest local R | sum of local R | Σ n³/3 | bytes / apply |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 48 | 19 | 0.63 | 1 717 | 24 MB | 123 MB | 6.4 Gflop | 230 kB |
+| 192 | 55 | 0.72 | 825 | 5.4 MB | 68 MB | 1.6 Gflop | 293 kB |
+| 768 | 165 | 0.70 | 352 | 1.0 MB | 48 MB | 0.5 Gflop | 441 kB |
+
+**D. One 12-hour window** (60 groups, 192 patches, ℓ = 60 km, h = 4ℓ). Sum over all patches; the factors take as much memory again:
+
+| group (× 12 images) | pixels per image | local R per window | factorisation per window |
+|---|---:|---:|---:|
+| Met-11 ch 5 | 10 680 | 0.78 GB | 17.9 Gflop |
+| Met-11 ch 6 | 5 297 | 0.27 GB | 4.9 Gflop |
+| Met-11 ch 9 | 991 | 0.03 GB | 0.3 Gflop |
+| Met-8 ch 5 | 8 904 | 0.59 GB | 12.5 Gflop |
+| Met-8 ch 6 | 4 939 | 0.25 GB | 4.4 Gflop |
+| **total** | 369 732 data | **1.92 GB** (3.8 GB with factors) | **40 Gflop** |
+
+The Met-8 groups are modelled on the same disc as Met-11 (sub-satellite longitude 0°); only their size matters here.
+
+- **Accuracy is set by the local density, which is the same for every channel** (pixels about 55 km apart). Channel-5 and channel-6 images give the same errors at the same h/ℓ.
+  - With ℓ ≈ the pixel spacing, there are 1–2 pixels per ℓ². R⁻¹ decays faster than in the toy baseline (7 per ℓ²).
+- **Halo needed for a 1e-3 error gate** (α = 0.8):
+  - **2ℓ (120 km) at ℓ = 60 km**: 6.4–8.2e-4 over the seeds and both image sizes, a modest margin;
+  - **4ℓ (400 km) at ℓ = 100 km**: 3ℓ is marginal at 8.5–9.5e-4;
+  - **4ℓ (600 km) at ℓ = 150 km**: 3ℓ fails at 1.1–1.3e-3.
+  - So the halo in km must follow the estimated ℓ (plan Phase B step 6). Since α = 0.5 is easier than 0.8 (A), these are on the safe side if α ≤ 0.8.
+- **The cost is small.**
+  - A whole 12-hour window needs about 1.9 GB of local R (3.8 GB with factors) and 40 Gflop of factorisation, **summed over all tasks**, at ℓ = 60 km and h = 4ℓ.
+  - The largest local system is about 830–860 data with 192 patches.
+  - Each application then costs about two triangular solves per block: of the order of 0.5 Gflop in total per application of the symmetrised operator.
+  - Larger ℓ raises the local n moderately (1 410 at ℓ = 150 km, h = 4ℓ, 192 patches).
+- **A global equal-area partition fits SEVIRI poorly.** Only 19 of 48, 55 of 192 and 165 of 768 patches hold data. Among those, the core sizes vary with a CV of 0.6–0.7, and edge and cloud-gap patches have tiny cores with large halo/core ratios. Density-balanced patches are the subject of Phase A step 5b.
+- The setup time at 768 patches (93 s) is an artefact of the toy's sphere push, which tests every record against every patch (see `SphereDecomposition.candidate_ranks`).
+
 ## 3. Status against the acceptance gates (slide 8)
 
 | Gate | Status |
