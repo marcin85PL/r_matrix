@@ -554,13 +554,12 @@ def sample(comm, maps, factors, z_core, phase="sample"):
     values are sent to the patches that hold them in their halo. Repeats until done. Returns
     (x per patch, number of communication rounds). Only newly computed values travel.
     """
-    P = comm.size
     x = [np.full(f.ncore, np.nan) for f in factors]
     xh = [np.full(f.nhalo, np.nan) for f in factors]
     done = [np.zeros(f.ncore, dtype=bool) for f in factors]
     sent = [np.zeros(f.ncore, dtype=bool) for f in factors]
     order = [np.argsort(f.rank, kind="stable") for f in factors]
-    rounds = 0
+    rounds, ndone = 0, 0
     while True:
         for p, f in enumerate(factors):
             W = f.W_loc
@@ -577,9 +576,11 @@ def sample(comm, maps, factors, z_core, phase="sample"):
                 done[p][i] = True
         if all(d.all() for d in done):
             break
+        now = sum(int(d.sum()) for d in done)
+        if now == ndone:
+            raise RuntimeError("sample: no progress (W not triangular in the rank order?)")
+        ndone = now
         rounds += 1
-        if rounds > 10 * P + 10:
-            raise RuntimeError("sample: no progress")
         sends = []
         for p, mp in enumerate(maps):
             new = done[p] & ~sent[p]
