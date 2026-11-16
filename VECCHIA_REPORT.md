@@ -9,11 +9,11 @@ Branch `vecchia-prototype` of the toy (`~/git/r_matrix`, worktree `~/git/r_matri
 ## 1. Verdict
 
 **The point Vecchia factor of design note 3 (§2.2) is not suitable operationally for our data and decomposition.
-A block variant is: it keeps all the benefits and costs no more than core + halo.**
+A block variant is: it keeps all the benefits, at about the cost of core + halo and with half its communication.**
 
 | | core + halo (today) | point Vecchia (design note 3) | **block Vecchia (new)** |
 |---|---|---|---|
-| accuracy at the operational setting | reference | matches core + halo only at m ≈ 100 | **matches core + halo at the same h** |
+| accuracy at the operational setting | reference | matches core + halo only at m ≈ 100 | **within 2× of core + halo at the same h (sometimes better)** |
 | accuracy for the same bytes | reference | worse | **16–64× better (h = 6c)** |
 | SPD | after symmetrisation, checked | by construction | **by construction** |
 | R⁻¹, R^−½, R^½ from one operator | R⁻¹ only | yes | **yes** |
@@ -26,7 +26,7 @@ A block variant is: it keeps all the benefits and costs no more than core + halo
 | reproducible (D2) | yes | yes | yes |
 
 * **Block Vecchia.** Each R-patch conditions jointly on the data of *earlier* patches within h: a **one-sided halo**.
-  * **Accuracy:** the same as the symmetrised core + halo at the same h, on all 9 golden cases and on real SEVIRI images from 96 to 1024 tasks.
+  * **Accuracy:** within a factor of 2 of the symmetrised core + halo at the same h, sometimes better, on all 9 golden cases and on real SEVIRI images (ch5, ch6, ch9) from 96 to 1024 tasks. A slightly wider h (about 4.5–5c) would match it and still costs less communication.
   * **Communication:** half that of core + halo.
   * **Apply flops:** about the same as a core + halo that stores its core rows (1.0–1.9× fewer).
   * **Accuracy at equal communication:** h = 6c costs fewer bytes than core + halo at 4c and is 16–64× more accurate.
@@ -37,7 +37,7 @@ A block variant is: it keeps all the benefits and costs no more than core + halo
   * the neighbour search needs 6 rounds; only 52 % of the data are certified after 2;
   * sampling needs about 1000 sequential rounds.
 
-  Ordering patch by patch (D2-friendly) cuts the peers to about 10–16 and the rounds to about 50, but halo / core stays 4–7 at 96 tasks. Apply flops are the lowest of the three, its only advantage.
+  Ordering patch by patch (D2-friendly) helps at 96 tasks: halo / core 2–7, peers 9–16, about 50 rounds, and m = 100 matches core + halo. It loses again at 1024 tasks: halo / core 11–17 (1.5× core + halo), peers 31–38, about 340 rounds. The neighbour search still needs 6 rounds. Apply flops are the lowest of the three, its only clear advantage.
 * **A side finding for today's rcorr.** The busiest-task apply of core + halo scales poorly, ×4.7 for ×10.7 tasks. The reason is that it solves with the Cholesky factor of core + halo (4 n² flops, n = core + halo). If the core rows of R_loc⁻¹ are stored instead (4 n_core n flops; memory n_core·n, *less* than the factor at large P), the apply at 1024 tasks becomes **20× cheaper** (3.2e6 → 1.6e5 flops). The setup grows by 30 % at 1024 tasks (×2.9 at 96). The numbers are those of core + halo; nothing else changes.
 
 **Recommendation.**
@@ -46,7 +46,7 @@ A block variant is: it keeps all the benefits and costs no more than core + halo
 * It would give:
   * R^½ for the EDA directly, as an alternative to Chebyshev on mult;
   * R^−½ for the minimisers that abort today;
-  * a cheaper and more scalable R⁻¹.
+  * an R⁻¹ with half the communication of core + halo and about its accuracy.
 * The next steps are in §6.
 
 ## 2. What was built
@@ -114,7 +114,7 @@ All costs are **flop and message counts, not timings**. The toy is serial Python
 | sph_short_halo (h = 1.5c) | 6e-2 | 1e-1 | 2e-3 | 5e-6 |
 | groups / classes / tiny | ≤ 1e-3 | ≤ 1e-3 | exact (n ≤ m) | exact |
 
-Block tracks core + halo everywhere. Point Vecchia is excellent where the data are sparse relative to c. Where many data lie within c (clustered, geo disc) it is poor: λ_min drops to about 0.5 at m = 20, though it stays SPD.
+Block tracks core + halo everywhere: its error is 0.3–2× that of core + halo. Point Vecchia is excellent where the data are sparse relative to c. Where many data lie within c (clustered, geo disc) it is poor: λ_min drops to about 0.5 at m = 20, though it stays SPD.
 
 **Real SEVIRI ch6, slot 28** (max |λ − 1|):
 
@@ -131,9 +131,17 @@ Block tracks core + halo everywhere. Point Vecchia is excellent where the data a
 * 96 patches: core + halo 1.2e-4, block 1.9e-4, block h = 6c 1.3e-6, point m = 100 1.3e-4.
 * 1024 patches: core + halo 2.4e-4, block 1.5e-4.
 
-CH5_PLACEHOLDER
+**ch5 slot 28** (n = 11 415, the densest channel):
 
-* **Accuracy depends on h and α, not on P.** It degrades with α the same way for block and core + halo. At α 0.9, h = 4c gives about 1e-2 for both.
+| α, P | core + halo h = 4c | block h = 4c (colour / id) | block h = 6c | point m = 100 (max-min / patch) |
+|---|---|---|---|---|
+| 0.5, 96 | 3.2e-4 | 6.3e-4 / 6.3e-4 | 1.5e-5 | 3.8e-4 / 4.4e-4 |
+| 0.7, 96 | 1.4e-3 | 2.2e-3 / 2.2e-3 | 8.0e-5 | 1.7e-3 / 2.2e-3 |
+| 0.7, 1024 | 2.4e-3 | 2.5e-3 / 2.9e-3 | 1.2e-4 | 1.7e-3 / 1.2e-3 |
+
+**ch6 slot 8** (another image, n = 5871, α 0.7, 96 patches): core + halo 1.2e-3, block 1.6e-3 (colour) and 1.3e-3 (id), block h = 6c 5.7e-5.
+
+* **Accuracy depends on h and α, hardly on P.** At h = 4c, block is 0.6–2× the core + halo error. Both degrade with α the same way: at α 0.9, h = 4c gives about 1e-2 for both. The patch sequence (colour or id) does not change the accuracy.
 * **Jₒ:** the relative error of dᵀC̃⁻¹d for the real departures is ≤ 1.5e-5 for core + halo and block at h = 4c, up to α 0.9. The relative error of C̃⁻¹d is ≤ 2.6e-4 for α ≤ 0.7 and about 1e-3 at α 0.9, similar for block and core + halo.
 * **Implied variances:** block is closer to 1 than core + halo, by 3–11×. At α 0.7 and P = 96: 2.5e-7 against 8.3e-7; at α 0.9: 9e-6 against 1e-4.
 
@@ -193,10 +201,10 @@ All 36 groups of the cycle, per task (= patch), summed over its groups. Bytes ar
 * x = W⁻¹z has covariance exactly C̃; the Monte-Carlo check is in notebook 03.
 * Rounds are the sequential communication steps of the forward substitution:
   * **block, colour:** 4–6 at 96, 8–14 at 384, 14–23 at 1024 patches;
-  * **point, max-min:** 160–1200;
-  * **point, patch order:** 40–50.
-* Each round is one sparse neighbour exchange of new values only, so block sampling costs about as much as 15 applications of R⁻¹ at 1024 tasks.
-* The alternative, a Chebyshev polynomial on the exact mult, needs 7–15 products for 1e-3 to 1e-4, and its samples have covariance close to, not equal to, C̃.
+  * **point, max-min:** 160–1220;
+  * **point, patch order:** 40–50 at 96 patches, 240–340 at 1024.
+* Each round is one sparse neighbour exchange of new values only. At 1024 tasks block sampling has the message count of 7–8 applications of R⁻¹ (two exchanges each), and the flops of one product with W.
+* The alternative, a Chebyshev polynomial on the exact mult, needs 7–15 products for 1e-3 to 1e-4. Its samples have a covariance close to C, not exactly the C̃ that 4D-Var inverts.
 
 ## 5. Operational suitability: what to watch
 
@@ -204,7 +212,7 @@ All 36 groups of the cycle, per task (= patch), summed over its groups. Bytes ar
   * **Patch sequence and load balance:** colour gives few sampling rounds but makes the last colours the busiest (setup up to 1.4× core + halo, bytes and peers like core + halo). Id balances the load and lowers bytes and peers by about a third, but sampling then needs 40–260 rounds. Worth trying: a sequence with few colours *and* balanced one-sided halos, for example alternating the order at every level of the RCB tree. Both sequences give the same accuracy.
   * **Per-class halo width:** each class needs its own h; the toy uses one h per build. Straightforward in rcorr, which already has per-class h.
   * **Dependence on the layout:** like core + halo, the operator depends on the patch layout. The reproducible mode (fixed patches) covers D2.
-  * **Choice of h:** h = 4c reproduces today's accuracy, and h = 5–6c buys one to two orders of magnitude for about the communication of today's core + halo.
+  * **Choice of h:** h = 4c is within 2× of today's accuracy, and h = 5–6c buys one to two orders of magnitude for about the communication of today's core + halo.
   * **Dense or clustered data:** fine at α 0.9 (golden sph_clustered 3e-3).
 * **Point Vecchia.**
   * **Reach:** set by the data density (spacing ≈ c), not by the correlation length. Capping at 2ℓ stalls the accuracy (the 16 Nov test).
@@ -220,7 +228,7 @@ All 36 groups of the cycle, per task (= patch), summed over its groups. Bytes ar
 
 ## 6. Next steps (proposed, not started)
 
-1. **Design note 3:** record the point-Vecchia result and the block variant. A short version is on branch `vecchia-note` of rcorr.
+1. **Done:** design note 3 §2.2, §3 and §5 updated on branch `vecchia-note` of rcorr (commits 97830ce and the next one, not merged).
 2. **Toy:**
    * a block mode with per-class h;
    * a balanced patch sequence (few colours, even one-sided halos);

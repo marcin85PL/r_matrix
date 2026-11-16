@@ -216,7 +216,7 @@ axs[0, 2].plot([96, 1024], [1, 1024 / 96], color="#c3c2b7", lw=1, label="ideal")
 for ax, t in zip(axs.flat, ("halo / core", "apply flops, busiest task", "apply speed-up of the busiest task vs 96",
                             "setup flops, busiest task", "peers of the busiest task", "sampling rounds (W⁻¹z)")):
     ax.set_title(t, fontsize=10); ax.set_xlabel("tasks (= patches)")
-axs[0, 0].set_yscale("log"); axs[0, 0].legend(fontsize=8); axs[0, 2].legend(fontsize=8)
+axs[0, 0].set_yscale("log"); axs[0, 2].legend(fontsize=8)
 fig.tight_layout()"""),
 code("""pm = pd.DataFrame([dict(P=x["P"], m=m, **x[f"point_m{m}"]["reach_km"], setup_rounds=x[f"point_m{m}"]["setup_rounds"],
                         **{f"certified_after_{k}": v for k, v in x[f"point_m{m}"]["setup_rounds_frac"].items()})
