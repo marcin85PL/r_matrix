@@ -6,10 +6,12 @@ Structural counts only (no factorisation): per patch, summed over its groups,
 
     core + halo    halo = data of the group within h of a core datum, owned elsewhere (both sides)
                    setup sum n^3 / 3, apply (symmetrised) sum 4 n^2, n = core + halo per group
+                   (two right-hand sides through the Cholesky factor, as rcorr does); "explicit":
+                   the core rows of R_loc^-1 stored, apply 4 n_core n, setup + 2 n^2 n_core
     block          one-sided halo: only data of patches earlier in the sequence (greedy colouring
                    of the patch graph); setup n_N^3/3 + 2 n_N^2 n_B + 3 n_B^2 n_N + 2 n_B^3 / 3;
                    apply 4 nnz(W) with nnz = n_B (n_B + 1) / 2 + n_B n_N; sampling rounds = longest
-                   chain of patch dependencies
+                   chain of patch dependencies. Also with the patches in id order (h = 4 c).
     point          m nearest earlier neighbours in the max-min ordering of each group; remote
                    neighbours = the apply halo; setup m^3 / 3 + 2 m^2 per datum; apply 4 (m + 1)
                    per datum; setup rounds of the radius-doubling search from R0 = 4 c; sampling
@@ -121,16 +123,22 @@ def main():
                   words=summary((nn ** 2 / 2).reshape(P, G).sum(1)),
                   bytes_apply=summary(16 * halo_pg.reshape(P, G).sum(1)), peers=summary(peers))
         row["core_halo"] = ch
+        # the same operator with the core rows of R_loc^-1 stored explicitly (n_core x n): setup
+        # adds the n_core unit solves (2 n^2 n_core); apply = A x and A^T x, 2 n_core n flops each
+        nc = core_pg
+        row["core_halo_explicit"] = dict(ch, flops_setup=summary((nn ** 3 / 3 + 2 * nn ** 2 * nc).reshape(P, G).sum(1)),
+                                         flops_apply=summary((4 * nc * nn).reshape(P, G).sum(1)),
+                                         words=summary((nc * nn).reshape(P, G).sum(1)))
 
         # block Vecchia, one-sided halo, colour sequence (patch graph from h = 4 c)
         seq, colour, deg = colour_sequence(own, pairs[4.0], P)
-        pos = np.empty(P, dtype=np.int64)
-        pos[seq] = np.arange(P)
         row["colours"] = int(colour.max() + 1)
         row["patch_degree"] = summary(deg)
-        for hc in (3.0, 4.0):
+        for hc, how in ((3.0, "colour"), (4.0, "colour"), (4.0, "id")):
             pr = pairs[hc]
             oi, oj = own[pr[:, 0]], own[pr[:, 1]]
+            pos = np.empty(P, dtype=np.int64)
+            pos[seq if how == "colour" else np.arange(P)] = np.arange(P)
             k = pos[oj] < pos[oi]
             key = np.unique(oi[k].astype(np.int64) * n + pr[k, 1])
             hp, hj = key // n, key % n
@@ -140,10 +148,10 @@ def main():
             nnz = nB * (nB + 1) / 2 + nB * nN
             dep = [np.unique(own[hj[hp == p]]) for p in range(P)]
             rounds = np.zeros(P, dtype=np.int64)
-            for p in seq:
+            for p in (seq if how == "colour" else range(P)):
                 if len(dep[p]):
                     rounds[p] = rounds[dep[p]].max() + 1
-            row[f"block_h{hc:g}"] = dict(
+            row[f"block_h{hc:g}" + ("_id" if how == "id" else "")] = dict(
                 halo_over_core=float(nN.sum() / n), flops_setup=summary(fs.reshape(P, G).sum(1)),
                 flops_apply=summary((4 * nnz).reshape(P, G).sum(1)), words=summary(nnz.reshape(P, G).sum(1)),
                 bytes_apply=summary(16 * nN.reshape(P, G).sum(1)),

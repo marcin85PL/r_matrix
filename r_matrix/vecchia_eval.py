@@ -204,9 +204,13 @@ def costs(built):
 
 def core_halo_costs(sizes, ngroups=1):
     """Flops of core + halo for per-patch (ncore, nhalo) block sizes: setup n^3 / 3, symmetrised
-    apply 2 right-hand sides x 2 triangular solves = 4 n^2; stored factor n^2 / 2 words."""
+    apply 2 right-hand sides x 2 triangular solves = 4 n^2; stored factor n^2 / 2 words.
+    "explicit": the core rows of R_loc^-1 stored (n_core x n), apply 4 n_core n, setup + 2 n^2 n_core."""
     n = np.array([a + b for a, b in sizes], dtype=float)
-    return dict(flops_setup_max=float((n ** 3 / 3).max()), flops_setup_total=float((n ** 3 / 3).sum()),
+    nc = np.array([a for a, _ in sizes], dtype=float)
+    return dict(flops_apply_explicit_max=float((4 * nc * n).max()),
+                flops_apply_explicit_total=float((4 * nc * n).sum()),
+                flops_setup_explicit_max=float((n ** 3 / 3 + 2 * n ** 2 * nc).max()),flops_setup_max=float((n ** 3 / 3).max()), flops_setup_total=float((n ** 3 / 3).sum()),
                 flops_apply_max=float((4 * n ** 2).max()), flops_apply_total=float((4 * n ** 2).sum()),
                 words_stored_max=int((n ** 2 / 2).max()),
                 halo_over_core=float(sum(b for _, b in sizes) / sum(a for a, _ in sizes)))
