@@ -14,6 +14,7 @@ import scipy.sparse as sp
 
 from . import vecchia as V
 from .comm import MockComm
+from .commmap import build_comm_maps, halo_exchange, halo_exchange_adjoint
 from .covariance import LocalSolver, build_R
 from .export import CASES
 from .generate import make_obs
@@ -131,15 +132,20 @@ def build(obs, decomp, variant, params, n_tasks=None, m=30, order="maxmin", seq=
 
 
 def core_halo(obs, decomp, c, alpha, h):
-    """Dense core + halo operator for one group's data: (A~, (A~ + A~^T)/2, per-patch (ncore, nhalo)).
+    """Dense core + halo operator for one group's data: (A~, (A~ + A~^T)/2, per-patch (ncore, nhalo),
+    communication counters).
 
     Rows and columns in sorted global-ID order. As in r_matrix.export._layout: owned data per patch,
-    "obs" halo criterion, local Cholesky on core + halo.
+    "obs" halo criterion, local Cholesky on core + halo. The counters are those of the halo discovery
+    and comm-map setup, and of one symmetrised application (halo + adjoint halo exchange).
     """
     P = decomp.size
     comm = MockComm(P)
     owned = distribute(obs, decomp)
-    halos, _, _ = discover_halos(comm, decomp, owned, h, "obs", "kdtree")
+    halos, halo_owner, _ = discover_halos(comm, decomp, owned, h, "obs", "kdtree")
+    maps = build_comm_maps(comm, owned, halos, halo_owner)
+    vals = halo_exchange(comm, maps, [np.ones(len(o)) for o in owned], phase="apply:halo")
+    halo_exchange_adjoint(comm, maps, vals, [len(o) for o in owned], phase="apply:adj_halo")
     gids = np.sort(obs["global_id"])
     n = len(gids)
     A = np.zeros((n, n))
@@ -152,7 +158,18 @@ def core_halo(obs, decomp, c, alpha, h):
         rows = np.searchsorted(gids, o["global_id"])
         cols = np.searchsorted(gids, np.concatenate([o["global_id"], hh["global_id"]]))
         A[np.ix_(rows, cols)] = s.solve(np.eye(s.n)[:, :s.ncore]).T
-    return A, 0.5 * (A + A.T), sizes
+    st = comm.stats
+    cm = dict(peers_max=int(max(len(m_.recv) for m_ in maps)), **setup_comm(st),
+              bytes_apply=st.total("apply")["bytes"], messages_apply=st.total("apply")["messages"])
+    return A, 0.5 * (A + A.T), sizes, cm
+
+
+def setup_comm(stats):
+    """Setup traffic: bytes of the record/ID exchanges (alltoallv), and the number of collective
+    calls (each MPI_Alltoall of counts is one call, whatever P)."""
+    ph = {k: v for k, v in stats.phases.items() if k.startswith("setup")}
+    return dict(bytes_setup=int(sum(v.bytes for k, v in ph.items() if not k.endswith("counts"))),
+                collectives_setup=int(sum(v.calls for v in ph.values())))
 
 
 def exact_C(obs, c, alpha):
@@ -182,8 +199,7 @@ def costs(built):
                 flops_apply_max=float(fa.max()), flops_apply_total=float(fa.sum()),
                 words_stored_max=int(words.max()), halo_over_core=float(nhalo.sum() / ncore.sum()),
                 halo_max=int(nhalo.max()), peers_max=int(peers.max()),
-                bytes_setup=st.total("setup")["bytes"], messages_setup=st.total("setup")["messages"],
-                rounds_setup=built.info.get("rounds", 1))
+                **setup_comm(st), rounds_setup=built.info.get("rounds", 1))
 
 
 def core_halo_costs(sizes, ngroups=1):
