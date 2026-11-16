@@ -228,7 +228,7 @@ All 36 groups of the cycle, per task (= patch), summed over its groups. Bytes ar
 
 ## 6. Next steps (proposed, not started)
 
-1. **Done:** design note 3 §2.2, §3 and §5 updated on branch `vecchia-note` of rcorr (commits 97830ce and the next one, not merged).
+1. **Done:** design note 3 §2.2, §3 and §5 updated on branch `vecchia-note` of rcorr (commits 97830ce and c6986d3, not merged).
 2. **Toy:**
    * a block mode with per-class h;
    * a balanced patch sequence (few colours, even one-sided halos);
