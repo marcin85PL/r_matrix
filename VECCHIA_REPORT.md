@@ -54,6 +54,54 @@ A block variant is: it keeps all the benefits, at about the cost of core + halo 
 
 ## 2. What was built
 
+### 2.1 How the two variants work
+
+**Both** start from the same exact identity. Any Gaussian density is a chain of conditionals in some order:
+
+    p(x) = p(x_1) · p(x_2 | x_1) · p(x_3 | x_1, x_2) · …
+
+Each conditional is again Gaussian. Whitening it gives one row (or one block of rows) of a triangular W with
+C⁻¹ = WᵀW: the exact inverse Cholesky factor. The approximation is to condition on a **few** earlier data instead
+of all of them. Then W is sparse, and C̃⁻¹ = WᵀW stays SPD for any choice of conditioning sets, because W is
+triangular with a positive diagonal. The two variants differ in what is conditioned, and on what.
+
+**Point Vecchia: each datum alone, on its m nearest earlier data.**
+* Order the data coarse to fine (max-min: each next datum is the one farthest from those already taken).
+* Regress datum i on its m nearest earlier neighbours N(i):
+  b = C_NN⁻¹ C_Ni, d = 1 − C_iN b, and (Wx)_i = (x_i − bᵀx_N) / √d.
+* **Why it reaches far.** The first data in a max-min ordering are spread over the whole disc, so their nearest
+  *earlier* neighbours are far away. The m nearest earlier data of a coarse datum can be 1000 km or more apart.
+  Only the late, fine data have local neighbours. SEVIRI data are thinned to a spacing of about c, so a patch
+  of a few hundred data always contains coarse data, and the patch needs data from all over the disc. This makes
+  it all-to-all.
+
+**Block Vecchia: the whole patch at once, on the earlier patches' data within h.**
+* Put the R-patches in a fixed sequence (patch id, or a colouring of the patch graph).
+* Patch B is conditioned **jointly** on N(B): the data of earlier patches within h of any datum of B.
+  The conditional is x_B | x_N ~ N(S x_N, D), with
+  S = C_BN C_NN⁻¹ (the kriging prediction of B from N) and D = C_BB − S C_NB (what is left unexplained).
+* With D = LLᵀ, the patch's rows of W whiten the residual: z_B = L⁻¹(x_B − S x_N).
+  So W_BB = L⁻¹ (a dense triangle) and W_BN = −L⁻¹S. The cost function is Jₒ = Σ_patches ‖z_B‖².
+* **Jointly** means that the correlations among the patch's own data are kept exactly, in D. z_Bᵀz_B does not
+  depend on the order of the data inside the patch: only the patch sequence matters (good for D2).
+* **One-sided.** A patch never conditions on later patches. Their link to it enters when *they* condition on it.
+  So each pair of neighbouring patches is coupled once, and the halo is half that of core + halo.
+* **Why h larger than the GC support (2c).** Given the nearby earlier data, the far ones add little (the screening
+  effect). But conditional dependence spreads beyond the support through chains of neighbours. The error falls fast
+  with h (ch6, α 0.7, 96 patches): 5e-2 at h = 2c, 1e-2 at 3c, 1.5e-3 at 4c, 5e-5 at 6c. With h covering all earlier
+  data, W is the exact inverse Cholesky factor (tested to 1e-12).
+* **The operations.**
+  * W x (R^−½): needs x_N, one halo exchange.
+  * Wᵀy: local products, then the halo parts go back to their owners in an adjoint halo exchange.
+  * R⁻¹ = WᵀW: the same two exchanges as core + halo, over half the halo.
+  * W⁻¹z (R^½): x_B = L z_B + S x_N needs x_N first, so it runs in the patch order, in rounds.
+
+**Compared with core + halo.** Core + halo approximates *rows of C⁻¹*: it solves over the core plus a halo on every
+side, keeps the core rows and symmetrises the result. Block Vecchia approximates a *factor* of C⁻¹, with a one-sided
+halo; it is SPD by construction and also gives R^±½.
+
+### 2.2 The code
+
 `r_matrix/vecchia.py`, about 600 lines; tests in `tests/test_vecchia.py`, 21 tests; the whole toy suite (131 tests) passes.
 
 * **Serial references.**
