@@ -60,9 +60,25 @@ A block variant is: it keeps all the benefits, at about the cost of core + halo 
 
     p(x) = p(x_1) · p(x_2 | x_1) · p(x_3 | x_1, x_2) · …
 
-Each conditional is again Gaussian. Whitening it gives one row (or one block of rows) of a triangular W with
-C⁻¹ = WᵀW: the exact inverse Cholesky factor. The approximation is to condition on a **few** earlier data instead
-of all of them. Then W is sparse, and C̃⁻¹ = WᵀW stays SPD for any choice of conditioning sets, because W is
+Each conditional is again Gaussian: x_i | earlier ~ N(bᵀx_earlier, d), where bᵀx_earlier is the regression
+(kriging) prediction of x_i and d the variance of what it misses. **Whitening** the conditional means scaling its
+prediction error to unit variance:
+
+    z_i = (x_i − bᵀx_earlier) / √d  ~ N(0, 1)
+
+This is linear in x and uses only x_i and earlier data, so it is one row of a lower-triangular W (1/√d on the
+diagonal, −b/√d in the columns of the earlier data, zero elsewhere), and z = W x. Each z_i is independent of
+everything earlier, so the z_i are independent with unit variance: Cov(z) = W C Wᵀ = I, hence C⁻¹ = WᵀW, the exact
+inverse Cholesky factor. Jₒ = xᵀC⁻¹x = Σ z_i² is a sum of squared standardised prediction errors. For a block, the
+prediction error is a vector with a full covariance D = LLᵀ, and L⁻¹ takes the place of 1/√d: one block of rows.
+
+*Example, two data with correlation ρ:* z₁ = x₁ and z₂ = (x₂ − ρx₁) / √(1 − ρ²), so
+
+    W = [ 1                 0           ]        WᵀW = 1/(1 − ρ²) · [  1  −ρ ]  = C⁻¹.
+        [ −ρ/√(1 − ρ²)      1/√(1 − ρ²) ]                           [ −ρ   1 ]
+
+The approximation is to condition on a **few** earlier data instead of all of them. Each z_i is then whitened with
+respect to that subset only. Then W is sparse, and C̃⁻¹ = WᵀW stays SPD for any choice of conditioning sets, because W is
 triangular with a positive diagonal. The two variants differ in what is conditioned, and on what.
 
 **Point Vecchia: each datum alone, on its m nearest earlier data.**
