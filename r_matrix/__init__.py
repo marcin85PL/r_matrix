@@ -1,4 +1,7 @@
-"""Correlated-R prototype: a core + halo approximation to R^-1 on mock MPI tasks.
+"""Correlated-R prototype: approximations to R^-1 on mock MPI tasks.
+
+Two methods: core + halo (this package's pipeline) and a sparse inverse-Cholesky (Vecchia)
+factor (``r_matrix.vecchia``, evaluated with ``r_matrix.vecchia_eval``).
 
 See README.md in this directory for the design and the results. Quick start::
 

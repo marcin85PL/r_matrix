@@ -9,7 +9,8 @@ Everything runs in one Python process on **mock MPI tasks**, and every approxima
 | get it running | [§1 Getting started](#1-getting-started) |
 | see the whole pipeline on a toy problem, step by step | `notebooks/01_walkthrough.ipynb` (about 15 min) |
 | understand why a halo is needed | [§3 Background](#3-background) |
-| know what was found | [RESULTS.md](RESULTS.md) |
+| know what was found | [RESULTS.md](RESULTS.md) (core + halo), [VECCHIA_REPORT.md](../VECCHIA_REPORT.md) (Vecchia factor) |
+| try the alternative to core + halo: a sparse inverse-Cholesky (Vecchia) factor | [§5 Vecchia factor](#vecchia-factor-an-alternative-to-core--halo), `notebooks/03_vecchia_prototype.ipynb` |
 | change or extend something | [§7 Extending the code](#7-extending-the-code), [§8 Starter exercises](#8-starter-exercises) |
 
 ---
@@ -22,16 +23,17 @@ The repository ([github.com/marcin85PL/r_matrix](https://github.com/marcin85PL/r
 r_matrix/                          the repository
   pyproject.toml                   package metadata and dependencies
   r_matrix/                        the package (this README, RESULTS.md)
-  tests/test_r_matrix.py           pytest suite
+  tests/                           pytest suite
   notebooks/01_walkthrough.ipynb   start here
   notebooks/02_experiments.ipynb   the full experiments behind RESULTS.md
+  notebooks/03_vecchia_prototype.ipynb, 04_vecchia_evaluation.ipynb   the Vecchia factor and its evaluation
 ```
 
 ```bash
 git clone https://github.com/marcin85PL/r_matrix.git && cd r_matrix
 python3 -m venv .venv && source .venv/bin/activate      # tested with Python 3.14
 pip install -e ".[all]"                                 # editable install, plus test and notebook extras
-python -m pytest -q                                     # expect: 92 passed in about 20 s
+python -m pytest -q                                     # expect: 131 passed in about 1 min
 python -m ipykernel install --user --name r_matrix     # makes the venv available to Jupyter
 ```
 
@@ -164,6 +166,17 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 | `boundary` | 20 % exactly on cell edges and xmax/ymax | the ownership rule |
 | `geostationary` | jittered regular pixel grid | near-uniform imager coverage; allows contour maps |
 
+### Vecchia factor: an alternative to core + halo
+
+`vecchia.py` approximates the precision by a sparse factor, C̃⁻¹ = WᵀW with W lower triangular in an ordering of the data. It is SPD by construction, and one factor gives R⁻¹ = WᵀW, R^−½ = W and R^½ z = W⁻¹z (forward substitution, in rounds of halo exchanges). The module docstring has the equations. Two variants:
+
+| variant | conditioning set | setup | status |
+|---|---|---|---|
+| point | the m nearest earlier data in a max-min (or patch-wise) ordering | `setup_point`: certified neighbour search by radius-doubling pushes | rejected: the neighbours reach across the disc, almost all-to-all |
+| block | the R-patch, jointly, on the data of earlier patches within h (a one-sided halo); patches in id or colour sequence | `setup_block`: one push of positions | candidate: core + halo accuracy at the same h, half the halo |
+
+Both build, per patch, the owned rows of W (a `LocalFactor`) over [owned; halo]; `apply_W`, `apply_Wt`, `apply_inv` and `sample` run on the same `MockComm` as the pipeline, with the halo exchange and the adjoint halo exchange. `vecchia_eval.py` drives them for evaluation: `golden_data` (the export cases), `build`, `core_halo` (the dense symmetrised core + halo operator for the same data), `exact_C` and `costs`. Results and conclusions: [VECCHIA_REPORT.md](../VECCHIA_REPORT.md).
+
 ### Tests
 
 `tests/test_r_matrix.py` has 92 short tests, one or two per stage plus end-to-end numerical checks. They are also the best usage examples. The numerical checks that matter most:
@@ -171,6 +184,8 @@ Loops of the form `for r in range(P): ...` are therefore "what every task does l
 - with a halo covering the whole domain, the result equals the global solve exactly;
 - the error decreases as h grows;
 - the distributed matvec equals the global one when h ≥ 2ℓ.
+
+`tests/test_vecchia.py` has 21 tests for the Vecchia factor: W with complete conditioning sets is the exact inverse Cholesky factor; the distributed W equals the serial one; WᵀW is symmetric and W, Wᵀ adjoint through the exchanges; SPD for any m; bit-identical results on 1, 2, 4 and 7 tasks (D2); sampling solves Wx = z. `tests/test_export.py` (18 tests) covers the golden-data export.
 
 ## 6. Where to look first
 
@@ -237,7 +252,13 @@ r_matrix/              the repository
     reference.py       global exact solve
     diagnostics.py     error metrics, load balance, halo summary
     pipeline.py        Config, run(), RunResult (apply_Rinv, apply_Rinv_exact), sweep(), local_solves (plain or symmetrised), patch_task_map
+    export.py          golden-data export for the C++ library tests
+    vecchia.py         Vecchia factor: orderings, patch sequence, point and block W (serial and distributed), apply, sampling, eigenvalue diagnostics
+    vecchia_eval.py    Vecchia evaluation helpers: golden-case data, build, dense core + halo for comparison, exact C, costs
+  VECCHIA_REPORT.md  findings for the Vecchia factor
   tests/test_r_matrix.py           92 pytest tests
+  tests/test_vecchia.py            21 Vecchia tests
+  tests/test_export.py             18 export tests
   experiments/symmetric_operator.py  symmetrised operator: symmetry, definiteness, accuracy, cost (RESULTS §2.5)
   experiments/groups.py              correlation groups: equivalence, cost (RESULTS §2.6)
   experiments/sphere.py              the sphere: accuracy and cost against the plane (RESULTS §2.7)
@@ -245,5 +266,11 @@ r_matrix/              the repository
   experiments/seviri.py              realistic SEVIRI images: accuracy, sensitivity to l, cost per window (RESULTS §2.9)
   experiments/partitions.py          equal-area bands vs density-balanced (bisection) patches on SEVIRI (RESULTS §2.10)
   notebooks/01_walkthrough.ipynb   toy problem, step by step
+  experiments/vecchia_golden.py      Vecchia on the golden cases → vecchia_results/golden.json
+  experiments/vecchia_seviri.py      Vecchia on one real SEVIRI image (needs the ECMWF input file) → vecchia_results/acc_*.json
+  experiments/vecchia_scaling.py     cost and communication counts, 96–1024 tasks → vecchia_results/scaling.json
+  experiments/make_nb03.py, make_nb04.py   generators of notebooks 03 and 04
   notebooks/02_experiments.ipynb   full experiments (sections 1–6)
+  notebooks/03_vecchia_prototype.ipynb   the Vecchia factor step by step
+  notebooks/04_vecchia_evaluation.ipynb  the Vecchia results
 ```

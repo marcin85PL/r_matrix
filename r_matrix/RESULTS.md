@@ -360,6 +360,15 @@ Without co-located records every patch then gets the same number of observations
   - With many groups in a window, build the partition once from all of them (or per time slot), so that the total work per patch is balanced. This prototype builds it per run.
   - Caveat: accuracy was measured on one mock SEVIRI layout with one group; the two-disc runs are cost only.
 
+### 2.11 An alternative: the Vecchia factor (added 2026-11-17)
+
+A sparse inverse-Cholesky factor, C̃⁻¹ = WᵀW (`vecchia.py`), was evaluated against the symmetrised core + halo operator on the golden cases and on real Met-11 SEVIRI images with the operational partition at 96–1024 tasks. In short:
+- **block Vecchia** (the patches as blocks, a one-sided halo of width h): error 0.3–2× that of core + halo at the same h, half the halo, SPD by construction, R^±½ from the same factor, sampling in 5–15 rounds; at h = 6c it costs fewer bytes than core + halo at 4c and is 16–64× more accurate;
+- **point Vecchia** (m nearest earlier neighbours): rejected, since the neighbours of thinned data reach across the disc (almost all-to-all communication, about 1000 sampling rounds);
+- a side finding for core + halo: storing the core rows of R_loc⁻¹ instead of its Cholesky factor makes the apply 20× cheaper at 1024 tasks.
+
+Details, tables and costs: [VECCHIA_REPORT.md](../VECCHIA_REPORT.md) and `notebooks/04_vecchia_evaluation.ipynb`.
+
 ## 3. Status against the acceptance gates (slide 8)
 
 | Gate | Status |

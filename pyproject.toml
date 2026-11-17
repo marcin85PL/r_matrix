@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "r_matrix"
 version = "0.1.0"
-description = "Prototype: core + halo approximation to a correlated observation-error R^-1 on mock MPI tasks"
+description = "Prototype: core + halo and Vecchia-factor approximations to a correlated observation-error R^-1 on mock MPI tasks"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]

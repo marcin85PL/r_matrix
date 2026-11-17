@@ -1,10 +1,13 @@
-# Vecchia prototype: report (overnight 16–17 Nov 2026)
+# Vecchia prototype: report (16–17 Nov 2026)
 
-> **Reminder:** on 16 Nov you considered adding one more cycling experiment and deferred the decision to today.
-> The diagonal σ_o/√2 run is yours to set up.
+Branch `vecchia-prototype` of the toy, based on `golden-export`. The results (JSON) are in
+`experiments/vecchia_results/`; notebook 04 reads them.
 
-Branch `vecchia-prototype` of the toy (`~/git/r_matrix`, worktree `~/git/r_matrix-wt/vecchia-prototype`), based on
-`golden-export`. Not merged, not pushed.
+**Decisions of 17 Nov 2026** (rcorr plan, §6 steps 15 and 16; design note 3 §5):
+* block Vecchia is planned as an rcorr stage next to core + halo (a method per class), not scheduled yet;
+* the stored-row apply for core + halo (§1, side finding) is planned behind a runtime switch, with the factor path as the
+  default until it is timed;
+* point Vecchia is rejected.
 
 ## 1. Verdict
 
@@ -70,7 +73,7 @@ A block variant is: it keeps all the benefits, at about the cost of core + halo 
   * `experiments/vecchia_golden.py`, `vecchia_seviri.py` and `vecchia_scaling.py`.
 * **Notebooks.**
   * `notebooks/03_vecchia_prototype.ipynb`: the implementation, step by step, on the geo-disc golden case.
-  * `notebooks/04_vecchia_evaluation.ipynb`: all results; it reads the JSON files in `$HPCPERM/r-package/vecchia/results`.
+  * `notebooks/04_vecchia_evaluation.ipynb`: all results; it reads the JSON files in `experiments/vecchia_results/`.
   * The generators are `experiments/make_nb03.py` and `make_nb04.py`.
 
 **Tests**, against independent references:
@@ -226,15 +229,15 @@ All 36 groups of the cycle, per task (= patch), summed over its groups. Bytes ar
   * Denser instruments: FCI, or SEVIRI unthinned.
   * One cycle and one date only; one slot-8 image as a check.
 
-## 6. Next steps (proposed, not started)
+## 6. Next steps (not started)
 
-1. **Done:** design note 3 §2.2, §3 and §5 updated on branch `vecchia-note` of rcorr (commits 97830ce and c6986d3, not merged).
+1. **Done:** design note 3 §2.2, §3 and §5 and the plan (§6 steps 15 and 16) updated on branch `vecchia-note` of rcorr.
 2. **Toy:**
    * a block mode with per-class h;
    * a balanced patch sequence (few colours, even one-sided halos);
    * the stored-row apply for core + halo (an easy gain for rcorr today);
    * a comparison with Chebyshev R^½ for the EDA: cost and sample covariance against C̃.
-3. **rcorr stage (if you agree):** `RCORR_METHOD_BLOCK_VECCHIA` next to core + halo.
+3. **rcorr stage (planned, plan §6 step 15):** a block Vecchia method next to core + halo, chosen per class.
    * **Reused:** partition, halo discovery with a one-way push filter, comm maps, adjoint halo exchange, per-(patch, class) `dpotrf`.
    * **New:**
      * a patch sequence (colouring) as a function of the layout;
@@ -250,6 +253,5 @@ All 36 groups of the cycle, per task (= patch), summed over its groups. Bytes ar
 | code, tests | `r_matrix/vecchia.py`, `r_matrix/vecchia_eval.py`, `tests/test_vecchia.py` |
 | experiments | `experiments/vecchia_golden.py`, `vecchia_seviri.py`, `vecchia_scaling.py` |
 | notebooks | `notebooks/03_vecchia_prototype.ipynb`, `notebooks/04_vecchia_evaluation.ipynb` (generators `experiments/make_nb0[34].py`) |
-| results (JSON) | `$HPCPERM/r-package/vecchia/results/` (`golden.json`, `acc_ch*_s*_a*_P*.json`, `scaling.json`) |
-| input data | `$HPCPERM/r-package/vecchia/data/jdj6_20220601_00.npz` (from `ofb_geos_4023_active_20220601_0012.odb`) |
-| Slurm jobs, logs | `$HPCPERM/r-package/vecchia/jobs/` |
+| results (JSON) | `experiments/vecchia_results/` (`golden.json`, `acc_ch*_s*_a*_P*.json`, `scaling.json`) |
+| input data | `jdj6_20220601_00.npz`, from the jdj6 observation feedback (`ofb_geos_4023_active_20220601_0012.odb`); ECMWF data, not in the repository |

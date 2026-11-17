@@ -20,7 +20,8 @@ This notebook compares the two Vecchia variants of `03_vecchia_prototype.ipynb` 
 6. **Sampling:** rounds of the forward substitution.
 7. **Behaviour from 96 to 1024 tasks.**
 
-The notebook only reads results. They come from three scripts:
+The notebook only reads results: the JSON files in `experiments/vecchia_results/` (set `VECCHIA_RESULTS` to read another
+directory). They come from three scripts:
 
 | results | script | where it runs |
 |---|---|---|
@@ -33,17 +34,18 @@ The real data are all active Met-11 SEVIRI clear-sky radiances of the jdj6 cycle
 * ch6: 64k
 * ch9: 12k
 
-Each group is one channel × one 15-min slot (36 groups). d = fg_depar / σ_o, c = ℓ = 115 km, and the GC support is 2ℓ = 230 km. The **patches are the RCB partition of all data of the cycle** into P patches, as rcorr does, so a single image has few data per patch at large P."""),
+The input file (`jdj6_20220601_00.npz`, extracted from the experiment's observation feedback) is ECMWF data and is not in
+the repository, so the real-data results can be read here but not regenerated without it. Each group is one channel × one 15-min slot (36 groups). d = fg_depar / σ_o, c = ℓ = 115 km, and the GC support is 2ℓ = 230 km. The **patches are the RCB partition of all data of the cycle** into P patches, as rcorr does, so a single image has few data per patch at large P."""),
 code("""import glob, json, os, sys
 from pathlib import Path
 import numpy as np, pandas as pd
 import matplotlib.pyplot as plt
-RES = Path(os.environ.get("VECCHIA_RESULTS", Path(os.environ.get("HPCPERM", "~")) / "r-package/vecchia/results")).expanduser()
+RES = Path(os.environ.get("VECCHIA_RESULTS", Path.cwd().parent / "experiments" / "vecchia_results")).expanduser()
 COL = {"core+halo": "#2a78d6", "block": "#eb6834", "point": "#1baf7a"}
 plt.rcParams.update({"figure.dpi": 110, "axes.spines.top": False, "axes.spines.right": False,
                      "axes.grid": True, "grid.color": "#e5e5e3", "grid.linewidth": 0.6})
 pd.set_option("display.width", 200); pd.set_option("display.max_columns", 40)
-print(RES)"""),
+print(RES.name)"""),
 md("""## 1. Golden cases
 
 There are 9 cases: uniform, clustered, several groups, poles and dateline, the geostationary disc, two classes, inactive data, and a short halo. Data and parameters are those of `export.CASES`, with c of 400 to 1500 km, α of 0.8 to 0.9 and h of 1.5c to 4c. We use 8 RCB patches. Every operator uses the class's halo width h.
